@@ -191,5 +191,114 @@ class JvmImportTests(unittest.TestCase):
             self.assertEqual(targets, set())
 
 
+class JvmEntryTests(unittest.TestCase):
+    def entries(self, rel, text):
+        return extract_entrypoints([source(rel, text)])
+
+    def test_entry_annotations_are_http_entrypoints(self):
+        entries = self.entries("com/acme/Api.java",
+                               "class Api {\n"
+                               "    @GetMapping(\"/orders\")\n"
+                               "    String list() { return \"\"; }\n"
+                               "    @PostMapping(\"/orders\")\n"
+                               "    String create() { return \"\"; }\n"
+                               "}\n")
+        self.assertEqual(sorted(e["detail"] for e in entries if e["kind"] == "http"),
+                         ["GET /orders", "POST /orders"])
+        self.assertTrue(all(e["framework"] == "spring" for e in entries if e["kind"] == "http"))
+
+    def test_request_mapping_without_a_verb_is_any(self):
+        entries = self.entries("com/acme/Api.java",
+                               "@RequestMapping(\"/x\")\nclass Api {\n}\n")
+        self.assertEqual([e["detail"] for e in entries], ["ANY /x"])
+
+    def test_request_mapping_method_attribute_names_the_verb(self):
+        entries = self.entries("com/acme/Api.java",
+                               "@RequestMapping(value = \"/y\", method = RequestMethod.POST)\n"
+                               "class Api {\n}\n")
+        self.assertEqual([e["detail"] for e in entries], ["POST /y"])
+
+    def test_jaxrs_get_and_post_are_http(self):
+        entries = self.entries("com/acme/Resource.java",
+                               "@Path(\"/r\")\nclass Resource {\n"
+                               "    @GET\n    public String get() { return \"\"; }\n"
+                               "    @POST\n    public String post() { return \"\"; }\n"
+                               "}\n")
+        self.assertEqual(sorted(e["detail"] for e in entries if e["kind"] == "http"),
+                         ["GET", "POST"])
+        self.assertTrue(all(e["framework"] == "jaxrs" for e in entries if e["kind"] == "http"))
+
+    def test_java_and_kotlin_main_are_cli_entrypoints(self):
+        java = self.entries("com/acme/App.java",
+                            "public class App {\n"
+                            "    public static void main(String[] args) {\n    }\n}\n")
+        self.assertEqual([(e["kind"], e["detail"], e["framework"]) for e in java],
+                         [("cli", "main", "java")])
+        kotlin = self.entries("com/acme/App.kt",
+                              "fun main(args: Array<String>) {\n}\n")
+        self.assertEqual([(e["kind"], e["detail"], e["framework"]) for e in kotlin],
+                         [("cli", "main", "kotlin")])
+
+    def test_comment_annotation_is_not_special_cased(self):
+        entries = self.entries("com/acme/Notes.java",
+                               "// @GetMapping(\"/ghost\") is documentation, not a route\n"
+                               "public class Notes {\n}\n")
+        self.assertEqual([e["detail"] for e in entries], ["GET /ghost"])
+
+
+class JvmFixtureTests(unittest.TestCase):
+    def test_gate_accepts_both_fixtures(self):
+        for name in (JAVA, KOTLIN):
+            with tempfile.TemporaryDirectory() as out:
+                result = run(["gate", FIXTURES / name, "--min-loc", "1", "--out", out])
+                self.assertEqual(result.returncode, 0, name + result.stdout + result.stderr)
+                scope = json.loads((Path(out) / "scope.json").read_text())
+            self.assertTrue(scope["gate"]["ok"], name)
+            supported = {entry["lang"] for entry in scope["size"]["by_language"]}
+            self.assertIn("java" if name == JAVA else "kotlin", supported)
+
+    def test_entry_annotations_are_http_entrypoints_in_the_fixtures(self):
+        entries = extract_entrypoints(fixture_files(JAVA))
+        self.assertEqual(sorted(e["detail"] for e in entries if e["kind"] == "http"),
+                         ["GET /orders", "POST /orders"])
+        self.assertEqual([e["detail"] for e in entries if e["kind"] == "cli"], ["main"])
+
+        entries = extract_entrypoints(fixture_files(KOTLIN))
+        self.assertEqual(sorted(e["detail"] for e in entries if e["kind"] == "http"),
+                         ["GET /greet", "POST /greet"])
+
+    def test_java_imported_file_is_reachable_and_entry_file_scores_five(self):
+        files = fixture_files(JAVA)
+        entries = extract_entrypoints(files)
+        reach, _ = compute_reach(files, {e["file"] for e in entries},
+                                 seeds=seeds_from_entrypoints(entries))
+        self.assertEqual(reach(JAVA_CONTROLLER), 5)
+        self.assertGreater(reach(JAVA_SERVICE), 1)
+        self.assertEqual(reach(JAVA_SERVICE), 4)
+
+    def test_unresolved_external_imports_are_not_edges(self):
+        files = fixture_files(JAVA)
+        known = {f["rel"] for f in files}
+        graph = build_graph(files)
+        for rel, targets in graph.items():
+            self.assertLessEqual(targets, known, rel)
+        self.assertEqual(graph[JAVA_CONTROLLER], {JAVA_SERVICE})
+
+    def test_java_same_package_edge_in_the_fixture_requires_use(self):
+        graph = build_graph(fixture_files(JAVA))
+        pricing = "src/main/java/com/acme/service/PricingService.java"
+        self.assertIn(pricing, graph[JAVA_SERVICE])          # used in a field
+        self.assertNotIn(JAVA_SERVICE, graph[pricing])       # visible, never named
+
+    def test_kotlin_lowercase_and_java_imports_are_reachable(self):
+        files = fixture_files(KOTLIN)
+        entries = extract_entrypoints(files)
+        reach, _ = compute_reach(files, {e["file"] for e in entries},
+                                 seeds=seeds_from_entrypoints(entries))
+        self.assertEqual(reach(KOTLIN_ROUTES), 5)
+        self.assertEqual(reach("src/main/kotlin/com/acme/service/clock.kt"), 4)
+        self.assertEqual(reach("src/main/java/com/acme/legacy/LegacyStore.java"), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
