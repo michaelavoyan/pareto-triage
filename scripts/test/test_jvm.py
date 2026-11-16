@@ -58,5 +58,138 @@ class LangTests(unittest.TestCase):
         self.assertLessEqual({"java", "kotlin"}, SUPPORTED)
 
 
+class JvmImportTests(unittest.TestCase):
+    def edges(self, files):
+        return build_graph(files)
+
+    def test_java_import_resolves_across_a_maven_source_root(self):
+        files = [
+            source("src/main/java/com/acme/api/Api.java",
+                   "package com.acme.api;\nimport com.acme.svc.Svc;\nclass Api {}\n"),
+            source("src/main/java/com/acme/svc/Svc.java",
+                   "package com.acme.svc;\nclass Svc {}\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/java/com/acme/api/Api.java"],
+                         {"src/main/java/com/acme/svc/Svc.java"})
+
+    def test_java_wildcard_import_names_no_file(self):
+        files = [
+            source("src/main/java/com/acme/api/Api.java",
+                   "package com.acme.api;\nimport com.acme.svc.*;\nclass Api {}\n"),
+            source("src/main/java/com/acme/svc/Svc.java",
+                   "package com.acme.svc;\nclass Svc {}\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/java/com/acme/api/Api.java"], set())
+
+    def test_java_static_member_import_resolves_to_its_class(self):
+        files = [
+            source("src/main/java/com/acme/api/Api.java",
+                   "package com.acme.api;\nimport static com.acme.util.Text.slug;\nclass Api {}\n"),
+            source("src/main/java/com/acme/util/Text.java",
+                   "package com.acme.util;\nclass Text { static String slug() { return \"\"; } }\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/java/com/acme/api/Api.java"],
+                         {"src/main/java/com/acme/util/Text.java"})
+
+    def test_java_static_import_without_a_scanned_class_stays_unresolved(self):
+        files = [
+            source("src/main/java/com/acme/api/Api.java",
+                   "package com.acme.api;\nimport static com.acme.util.Text.slug;\nclass Api {}\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/java/com/acme/api/Api.java"], set())
+
+    def test_java_same_package_access_needs_the_type_name(self):
+        files = [
+            source("src/main/java/com/acme/svc/A.java",
+                   "package com.acme.svc;\nclass A { void go() { new Used(); } }\n"),
+            source("src/main/java/com/acme/svc/Used.java",
+                   "package com.acme.svc;\nclass Used {}\n"),
+            source("src/main/java/com/acme/svc/Unused.java",
+                   "package com.acme.svc;\nclass Unused {}\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/java/com/acme/svc/A.java"],
+                         {"src/main/java/com/acme/svc/Used.java"})
+
+    def test_java_same_package_does_not_cross_directories(self):
+        files = [
+            source("src/main/java/com/acme/svc/A.java",
+                   "package com.acme.svc;\nclass A { void go() { new Used(); } }\n"),
+            source("src/main/java/com/acme/other/Used.java",
+                   "package com.acme.other;\nclass Used {}\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/java/com/acme/svc/A.java"], set())
+
+    def test_java_package_declaration_that_disagrees_with_the_directory_is_not_guessed(self):
+        files = [
+            source("src/main/java/com/acme/api/Api.java",
+                   "package com.acme.api;\nimport com.acme.foo.Bar;\nclass Api {}\n"),
+            source("weird/dir/Bar.java", "package com.acme.foo;\nclass Bar {}\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/java/com/acme/api/Api.java"], set())
+
+    def test_duplicate_package_paths_pick_the_shallower_file_every_time(self):
+        files = [
+            source("src/main/java/com/acme/api/Api.java",
+                   "package com.acme.api;\nimport com.acme.Foo;\nclass Api {}\n"),
+            source("a/com/acme/Foo.java", "package com.acme;\nclass Foo {}\n"),
+            source("com/acme/Foo.java", "package com.acme;\nclass Foo {}\n"),
+        ]
+        first = self.edges(files)["src/main/java/com/acme/api/Api.java"]
+        second = self.edges(files)["src/main/java/com/acme/api/Api.java"]
+        self.assertEqual(first, {"com/acme/Foo.java"})
+        self.assertEqual(first, second)
+
+    def test_kotlin_import_tries_class_file_lowercase_and_java(self):
+        files = [
+            source("src/main/kotlin/com/acme/app/App.kt",
+                   "package com.acme.app\n"
+                   "import com.acme.svc.Service\n"
+                   "import com.acme.svc.helper\n"
+                   "import com.acme.legacy.Store\n"
+                   "fun main() {}\n"),
+            source("src/main/kotlin/com/acme/svc/Service.kt", "package com.acme.svc\nclass Service\n"),
+            source("src/main/kotlin/com/acme/svc/helper.kt", "package com.acme.svc\nfun helper() = 1\n"),
+            source("src/main/java/com/acme/legacy/Store.java",
+                   "package com.acme.legacy;\npublic class Store {}\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/kotlin/com/acme/app/App.kt"], {
+            "src/main/kotlin/com/acme/svc/Service.kt",
+            "src/main/kotlin/com/acme/svc/helper.kt",
+            "src/main/java/com/acme/legacy/Store.java",
+        })
+
+    def test_kotlin_star_import_names_no_file(self):
+        files = [
+            source("src/main/kotlin/com/acme/app/App.kt",
+                   "package com.acme.app\nimport com.acme.svc.*\nfun main() {}\n"),
+            source("src/main/kotlin/com/acme/svc/Service.kt", "package com.acme.svc\nclass Service\n"),
+        ]
+        self.assertEqual(self.edges(files)["src/main/kotlin/com/acme/app/App.kt"], set())
+
+    def test_kotlin_has_no_same_package_edges(self):
+        files = [
+            source("com/acme/a/One.kt", "package com.acme.a\nclass One { fun go() = Two() }\n"),
+            source("com/acme/a/Two.kt", "package com.acme.a\nclass Two\n"),
+        ]
+        self.assertEqual(self.edges(files)["com/acme/a/One.kt"], set())
+
+    def test_external_imports_stay_unresolved(self):
+        files = [
+            source("src/main/java/com/acme/Api.java",
+                   "package com.acme;\n"
+                   "import com.missing.Thing;\n"
+                   "import com.missing.util.*;\n"
+                   "class Api {}\n"),
+            source("src/main/kotlin/com/acme/App.kt",
+                   "package com.acme\n"
+                   "import org.springframework.web.bind.annotation.GetMapping\n"
+                   "fun main() {}\n"),
+        ]
+        graph = self.edges(files)
+        self.assertEqual(set(graph), {f["rel"] for f in files})
+        for targets in graph.values():
+            self.assertEqual(targets, set())
+
+
 if __name__ == "__main__":
     unittest.main()
