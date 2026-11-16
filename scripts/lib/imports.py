@@ -32,6 +32,16 @@ JS_IMPORT_RES = [
 PY_FROM_RE = re.compile(r"^\s*from\s+(\.+)([\w.]*)\s+import\b", re.M)
 PY_IMPORT_RE = re.compile(r"^\s*import\s+([\w.]+)", re.M)
 
+JVM_EXTS = {".java", ".kt", ".kts"}
+
+# Java: `import a.b.C;`, `import a.b.*;`, `import static a.b.C.member;`.
+JAVA_IMPORT_RE = re.compile(
+    r"^[ \t]*import[ \t]+(?:(static)[ \t]+)?([\w.]+?)(\.\*)?[ \t\r]*;", re.M)
+# Kotlin: `import a.b.C`, `import a.b.*`, `import a.b.C as D`, optional `;`.
+KOTLIN_IMPORT_RE = re.compile(
+    r"^[ \t]*import[ \t]+([\w.]+?)(\.\*)?(?:[ \t]+as[ \t]+\w+)?[ \t\r]*;?[ \t\r]*(?=//|$)",
+    re.M)
+
 JS_EXTS = [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".json"]
 
 
@@ -121,9 +131,96 @@ def _resolve_py(rel, dots, module, known):
             base = "."
 
 
+def _jvm_index(known):
+    """Map every trailing path of a JVM source file to that file.
+
+    Java and Kotlin compile from a source root (`src/main/java`, `src/main/kotlin`,
+    `app/src/main/java`) that the import never names, so `com.acme.Foo` has to
+    resolve as a suffix of a scanned path. Longest-prefix lookups are exact
+    matches in this table; nothing outside the scanned set can be produced.
+    """
+    index = {}
+    for rel in known:
+        if posixpath.splitext(rel)[1] not in JVM_EXTS:
+            continue
+        parts = rel.split("/")
+        for start in range(len(parts)):
+            index.setdefault("/".join(parts[start:]), []).append(rel)
+    return index
+
+
+def _jvm_lookup(index, suffix):
+    """Deterministic pick when two scanned roots share a package path."""
+    hits = index.get(suffix)
+    if not hits:
+        return None
+    return min(hits, key=lambda path: (path.count("/"), path))
+
+
+def _resolve_java(spec, index, static=False):
+    """`a.b.C` -> `<source root>/a/b/C.java`. A static member import resolves to
+    its class: drop trailing segments until a scanned file matches."""
+    parts = [p for p in spec.split(".") if p]
+    if not parts:
+        return None
+    cuts = range(len(parts), 0, -1) if static else [len(parts)]
+    for cut in cuts:
+        hit = _jvm_lookup(index, "/".join(parts[:cut]) + ".java")
+        if hit:
+            return hit
+    return None
+
+
+def _resolve_kotlin(spec, index):
+    """`a.b.Bar` -> `Bar.kt`, `bar.kt`, then `Bar.java` for mixed projects.
+
+    The lowercase form covers top-level declarations imported by name
+    (`import com.acme.util.clock` where `clock.kt` declares `fun clock()`).
+    """
+    parts = [p for p in spec.split(".") if p]
+    if not parts:
+        return None
+    directory = "/".join(parts[:-1])
+    name = parts[-1]
+    stems = [name]
+    if name.lower() != name:
+        stems.append(name.lower())
+    for stem in stems:
+        path = posixpath.join(directory, stem) if directory else stem
+        hit = _jvm_lookup(index, path + ".kt")
+        if hit:
+            return hit
+    path = posixpath.join(directory, name) if directory else name
+    return _jvm_lookup(index, path + ".java")
+
+
+def _package_peers(known):
+    """Java visibility is package-scoped: same directory is same package."""
+    by_dir = {}
+    for rel in known:
+        if rel.endswith(".java"):
+            by_dir.setdefault(posixpath.dirname(rel), set()).add(rel)
+    return by_dir
+
+
+def _mentions_type(text, peer):
+    """Same-package access is only an edge when the peer's type name is used.
+
+    Visibility alone would make one import lift every class in a 40-class
+    package. This is proof of use, not a symbol table: a field or local of that
+    type, an extends/implements clause, a static call — any occurrence counts.
+    """
+    name = posixpath.basename(peer)[: -len(".java")]
+    if not name or name in ("package-info", "module-info"):
+        return False
+    return re.search(r"(?<![\w$])%s(?![\w$])" % re.escape(name), text) is not None
+
+
 def build_graph(files, aliases=None):
     known = {f["rel"] for f in files}
     graph = {rel: set() for rel in known}
+    jvm_index = None
+    jvm_peers = None
 
     for f in files:
         rel = f["rel"]
@@ -143,6 +240,29 @@ def build_graph(files, aliases=None):
                 target = _resolve_py(rel, "", match.group(1), known)
                 if target:
                     graph[rel].add(target)
+        elif f["ext"] in JVM_EXTS:
+            if jvm_index is None:
+                jvm_index = _jvm_index(known)
+            if f["ext"] == ".java":
+                for match in JAVA_IMPORT_RE.finditer(text):
+                    static = match.group(1) is not None
+                    if match.group(3) and not static:
+                        continue  # wildcard imports name no file
+                    target = _resolve_java(match.group(2), jvm_index, static)
+                    if target and target != rel:
+                        graph[rel].add(target)
+                if jvm_peers is None:
+                    jvm_peers = _package_peers(known)
+                for peer in jvm_peers.get(posixpath.dirname(rel), ()):
+                    if peer != rel and _mentions_type(text, peer):
+                        graph[rel].add(peer)
+            else:
+                for match in KOTLIN_IMPORT_RE.finditer(text):
+                    if match.group(2):
+                        continue  # star import names no file
+                    target = _resolve_kotlin(match.group(1), jvm_index)
+                    if target and target != rel:
+                        graph[rel].add(target)
 
     return graph
 

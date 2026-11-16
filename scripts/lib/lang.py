@@ -10,13 +10,14 @@ EXT_LANG = {
     ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
     ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript", ".cjs": "javascript",
     ".py": "python",
-    ".go": "go", ".rs": "rust", ".java": "java", ".kt": "kotlin", ".rb": "ruby",
+    ".go": "go", ".rs": "rust", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+    ".rb": "ruby",
     ".php": "php", ".cs": "csharp", ".swift": "swift", ".scala": "scala",
     ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".hpp": "cpp",
     ".vue": "vue", ".svelte": "svelte",
 }
 
-SUPPORTED = {"typescript", "javascript", "python"}
+SUPPORTED = {"typescript", "javascript", "python", "java", "kotlin"}
 
 MANIFESTS = [
     "package.json", "tsconfig.json", "requirements.txt", "pyproject.toml",

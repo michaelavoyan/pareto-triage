@@ -6,6 +6,7 @@ import re
 
 JS_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 PY_EXT = {".py"}
+JVM_EXT = {".java", ".kt", ".kts"}
 
 def _method_path(m):
     return "%s %s" % (m.group(1).upper(), m.group(3))
@@ -72,6 +73,32 @@ CLIENT_JS_RE = re.compile(r"^#!.*\bnode\b")
 CLIENT_PY_RE = re.compile(r"^#!.*\bpython[\d.]*\b")
 PY_MAIN_RE = re.compile(r"if\s+__name__\s*==\s*['\"]__main__['\"]\s*:")
 CLICK_CMD_RE = re.compile(r"@\w+\.command\s*\(")
+
+JAVA_MAIN_RE = re.compile(r"\bpublic\s+static\s+void\s+main\s*\(")
+KOTLIN_MAIN_RE = re.compile(r"^[ \t]*(?:(?:public|private|internal|external)[ \t]+)*fun[ \t]+main[ \t]*\(", re.M)
+
+# Spring and JAX-RS route annotations. `@GET`/`@POST` carry no path of their own;
+# JAX-RS puts it in a separate `@Path`, which is not joined here.
+HTTP_ANNOTATION_RE = re.compile(
+    r"@(GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping|RequestMapping)\b"
+    r"(?:[ \t]*\(([^()\n]*(?:\([^()\n]*\)[^()\n]*)*)\))?")
+JAXRS_ANNOTATION_RE = re.compile(r"@(GET|POST)\b")
+
+SPRING_VERBS = {
+    "GetMapping": "GET", "PostMapping": "POST", "PutMapping": "PUT",
+    "DeleteMapping": "DELETE", "PatchMapping": "PATCH", "RequestMapping": "ANY",
+}
+
+
+def _spring_detail(annotation, args):
+    """`GET /users`; the verb alone when the annotation names no path."""
+    verb = SPRING_VERBS[annotation]
+    if annotation == "RequestMapping":
+        named = re.search(r"method\s*=\s*(?:RequestMethod\.)?([A-Z]+)", args or "")
+        if named:
+            verb = named.group(1)
+    quoted = re.search(r"['\"]([^'\"]+)['\"]", args or "")
+    return "%s %s" % (verb, quoted.group(1)) if quoted else verb
 
 
 def _line_of(text, index):
@@ -191,6 +218,22 @@ def extract_entrypoints(files):
                                 lambda m: {"kind": "cli", "detail": "click/typer command"}):
                 hit["framework"] = "python"
                 found.append(hit)
+
+        if ext in JVM_EXT:
+            for hit in _collect(JAVA_MAIN_RE, text, rel, lambda m: {"kind": "cli", "detail": "main"}):
+                hit["framework"] = "java"
+                found.append(hit)
+            for hit in _collect(KOTLIN_MAIN_RE, text, rel, lambda m: {"kind": "cli", "detail": "main"}):
+                hit["framework"] = "kotlin"
+                found.append(hit)
+            for match in HTTP_ANNOTATION_RE.finditer(text):
+                found.append({"kind": "http", "framework": "spring", "file": rel,
+                              "line": _line_of(text, match.start()),
+                              "detail": _spring_detail(match.group(1), match.group(2))})
+            for match in JAXRS_ANNOTATION_RE.finditer(text):
+                found.append({"kind": "http", "framework": "jaxrs", "file": rel,
+                              "line": _line_of(text, match.start()),
+                              "detail": match.group(1)})
 
         for pattern, label in CONSUMER_RES:
             for hit in _collect(pattern, text, rel, lambda m, l=label: {"kind": "consumer", "detail": l}):
