@@ -790,6 +790,11 @@ def cmd_report(positional, flags):
     json_path.write_text(json.dumps(published, indent=2) + "\n", encoding="utf-8")
 
     print("pareto-triage %s — report" % VERSION)
+    if flags.get("open"):
+        import webbrowser
+        opened = webbrowser.open(html_path.resolve().as_uri())
+        print("board      %s" % ("opened in your browser" if opened else "could not open a browser; open %s" % html_path))
+
     print("verdict    %s" % ranked["shape"]["verdict"])
     if redactions:
         print("redacted   %d secret(s) across %d finding(s); defects.jsonl keeps the raw quote"
@@ -1154,7 +1159,7 @@ usage: pareto-triage <command> [args]
                               [--prompt-hash H] [--max-confidence high|med|low]
   rank <repo> [--require-coverage N]      phase 3 — score, cluster, shape
                               [--strict] [--budget S,M,L] [--trust-model-effort]
-  report <repo> [--allow-stale]           phase 4 — html + json
+  report <repo> [--allow-stale] [--open]  phase 4 — html + json
   verify <repo> [--suite CMD] [--limit N] phase 5 — reproduce top clusters with probes
                               [--fix patch.diff] [--keep-worktree]
                               [--scaffold] [--install] [--probe-timeout N] [--suite-timeout N]

@@ -69,6 +69,12 @@ Phase 2 is the only step where you exercise judgment. Everything else is determi
 - Publish a report with an empty "Could not determine" section.
 - Rank people. This measures code, not performance.
 
+## Always open the board
+
+The work is not finished when the file is written. Finish by running `report <repo> --open`, which renders the HTML board and opens it in the browser. If no browser is available, print the path and say so — never end a run with the user hunting for a file.
+
+A refusal is the exception: when the gate or the merge gate refuses, there is no board to open, and saying that plainly is the correct ending.
+
 ## Output contract
 
 The curve always carries an effort-for-impact ladder: what share of the work buys 50%, 70% and 80% of the impact. Report the row that is true; never replace it with a verdict word.
