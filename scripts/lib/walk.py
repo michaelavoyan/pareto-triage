@@ -24,6 +24,27 @@ MAX_BYTES = 2 * 1024 * 1024
 MAX_FILES = 20000
 
 
+TEST_DIR_SEGMENTS = ("/test/", "/tests/", "/androidtest/", "/androidtestdebug/",
+                     "/__tests__/", "/spec/", "/testdata/", "/integrationtest/")
+
+TEST_FILE_PATTERNS = [
+    r"(^|/)[^/]+(Test|Tests|IT|Spec)\.(java|kt|kts)$",
+    r"(^|/)test_[^/]+\.py$",
+    r"(^|/)[^/]+_test\.py$",
+    r"\.(test|spec)\.(ts|tsx|js|jsx|mjs)$",
+]
+
+
+def is_test_path(rel):
+    """Test code is not on the request path, and judging it wastes phase 2."""
+    import re
+
+    lowered = "/" + rel.lower()
+    if any(segment in lowered for segment in TEST_DIR_SEGMENTS):
+        return True
+    return any(re.search(pattern, rel, re.I) for pattern in TEST_FILE_PATTERNS)
+
+
 def count_loc(text):
     """Non-blank lines. Blank lines are not code."""
     return sum(1 for line in text.split("\n") if line.strip())
