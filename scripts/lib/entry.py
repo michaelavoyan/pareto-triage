@@ -129,7 +129,10 @@ def _resolve_include(rel, module, known):
 
 
 def extract_entrypoints(files):
+    from .walk import is_test_path
+
     found = []
+    files = [f for f in files if not is_test_path(f["rel"])]
     known = _known_paths(files)
 
     for f in files:

@@ -14,6 +14,8 @@ failure rather than a silent one.
 import ast
 import re
 
+from .walk import is_test_path
+
 JS_EXT = {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}
 PY_EXT = {".py"}
 JVM_EXT = {".java", ".kt", ".kts"}
@@ -538,6 +540,7 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
     candidates = []
     parse_errors = []
     unreachable_files = 0
+    test_files = 0
 
     for f in files:
         rel = f["rel"]
@@ -601,6 +604,7 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
         "limit_hit": total > max_sites,
         "parse_errors": parse_errors,
         "unreachable_source_files": unreachable_files,
+        "test_files_excluded": test_files,
     }
     return sites, summary
 

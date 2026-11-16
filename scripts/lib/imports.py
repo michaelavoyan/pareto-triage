@@ -217,12 +217,15 @@ def _mentions_type(text, peer):
 
 
 def build_graph(files, aliases=None):
-    known = {f["rel"] for f in files}
+    from .walk import is_test_path
+
+    sources = [f for f in files if not is_test_path(f["rel"])]
+    known = {f["rel"] for f in sources}
     graph = {rel: set() for rel in known}
     jvm_index = None
     jvm_peers = None
 
-    for f in files:
+    for f in sources:
         rel = f["rel"]
         text = f["text"]
         if f["ext"] in JS_EXTS:
