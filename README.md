@@ -1,80 +1,92 @@
 # pareto-triage
 
+<p>
+  <img alt="tests" src="https://github.com/michaelavoyan/pareto-triage/actions/workflows/test.yml/badge.svg">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-blue">
+  <img alt="dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen">
+</p>
+
+*Find the five fixes that matter, and forget the other two hundred and ninety-five.*
+
 Three hundred things look wrong in your codebase. You have a week. Which five do you fix?
 
-That's the question this answers. It scans the code, ranks what it finds by impact per unit of effort, and tells you which fixes actually buy the most robustness.
+This ranks them for you. It scans the code, weighs each problem by how much damage it can do against how much work it takes to fix, and tells you where the leverage is.
 
-## How it works
+> I built it because every audit I'd been handed gave me a long list. Just a list — never sorted by what actually mattered first.
+>
+> **I wanted the other thing:** the smallest set of fixes that buys the biggest return, and a clear way to park the rest until the next iteration.
+>
+> **Nothing gets written off.** The aim is still everything, eventually. Each round takes the slice with the most value for the least effort, so the business feels the improvement while the rest waits its turn.
+>
+> The same shape shows up almost everywhere, by the way. A few customers, a few habits, a few people — most of the effect comes from a small part of the input. Code is just where I can measure it.
 
-It starts at your entrypoints — routes, CLI commands, cron jobs — and collects the functions a request can really reach. Then 22 rules look for facts: `eval`, shell injection, disabled TLS checks, committed keys, bare `except`, mutable defaults.
+## Try it
 
-The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent, one function at a time. It has to quote the line it's complaining about. Invent the quote and the finding is thrown out.
-
-The arithmetic never goes to the model. Impact, effort, clusters, concentration: computed, so two people get the same ranking.
-
-## What you get
-
-One HTML file. No JavaScript, no dashboard, no login.
-
-It opens with the shape of your problem:
-
-- **shortcut** — the 80/20 holds. Fix these, ignore the rest.
-- **concentrated-expensive** — the risk is real, the fix is not cheap.
-- **moderate** — use an effort budget.
-- **flat** — there is no shortcut, and the report says so instead of inventing one.
-
-Even then you get numbers. "80% of the impact for 60% of the work" is still a plan. The curve shows what 10%, 30% and half your effort would buy, so you can pick a budget and see the return.
-
-## Install
-
-Python 3.9 and nothing else. No packages, no network.
+Python 3.9, no packages, no network.
 
 ```sh
 git clone https://github.com/michaelavoyan/pareto-triage ~/Development/pareto-triage
 ln -s ~/Development/pareto-triage ~/.config/opencode/skills/pareto-triage
 ```
 
-Claude Code reads the same file from `~/.claude/skills/`. Anything else: point it at `SKILL.md`.
+Claude Code takes the same file from `~/.claude/skills/`. Anything else: point it at `SKILL.md`.
 
-## Use
-
-Ask your agent:
+Then ask:
 
 ```
 Use pareto-triage on this repo and tell me what to fix first.
 ```
 
-You get `out/report.html`. If the repo is too small or has no entrypoints, it refuses rather than inventing a ranking. That refusal is the feature.
+You get `out/report.html`. If the repo is too small or has no entrypoints, it refuses instead of inventing a ranking. That refusal is the point.
 
-Prefer the terminal? Seven commands:
+## What comes back
+
+One HTML file, no dashboard, no login. It opens with one of four answers:
+
+| Verdict | What it means | What you do |
+|---|---|---|
+| `shortcut` | the 80/20 holds | fix these, stop |
+| `concentrated-expensive` | real risk, expensive fix | schedule it properly |
+| `moderate` | the curve is gentle | spend an effort budget |
+| `flat` | no shortcut exists | stop looking for one |
+
+Even a flat repo gets numbers: what 10% of the work buys, what half buys. "80% of the impact for 60% of the effort" is still a plan you can take to a standup.
+
+## How it decides
+
+22 rules catch what can be proven from a line: `eval`, shell injection, disabled TLS, committed keys, bare `except`, mutable defaults.
+
+The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
+
+The maths never reaches the model. Two people running the same commands get the same ranking.
+
+## Terminal instead
 
 ```sh
 S=~/Development/pareto-triage/scripts/pareto-triage.py
 R=/path/to/repo
 
-python3 $S gate    $R     # will it even rank this repo?
-python3 $S context $R     # functions worth judging
-python3 $S detect  $R     # the facts
-# your agent writes $R/out/failure-modes.jsonl here
+python3 $S gate $R && python3 $S context $R && python3 $S detect $R
+# your agent writes $R/out/failure-modes.jsonl
 python3 $S validate $R/out/failure-modes.jsonl --repo $R
-python3 $S rank    $R     # scores and shape
-python3 $S report  $R     # out/report.html
+python3 $S rank $R && python3 $S report $R
 ```
 
-`pareto-triage help` has the rest, including `verify --fix` for proving a patch turns a failing probe green.
+`pareto-triage help` lists the rest, including `verify --fix`, which proves a patch turns a failing probe green.
 
-## What it won't do
+## Honest limits
 
-It won't see through a dependency-injection container, an event bus, or a route built from a string. Reachability follows imports, understands `tsconfig` aliases and workspace names, and stops three hops out by default.
+It cannot see through a DI container, an event bus, or a route built from a string. Reachability follows imports, understands `tsconfig` aliases and workspace names, and stops three hops out by default.
 
-It won't hand you a percentage you can quote. If the shape is flat, the report says flat.
+It has never audited a real repository: the tests run on three fixtures. Treat your first run as an experiment.
 
-And it has never audited a real repository yet — the tests run on three fixtures. Treat your first run as an experiment, not a verdict.
+Secrets are masked in `report.html` and `report.json`. `out/defects.jsonl` keeps the raw line, so don't commit `out/`.
 
-## Secrets
+## Why I keep it small
 
-Detected keys are masked before `report.html` and `report.json` are written. `out/defects.jsonl` keeps the raw line, so don't commit `out/`.
+No account, no upload, no telemetry. Your code stays on your disk, and the only thing that leaves is the HTML you choose to show someone. That was the whole design constraint, and it is why the tool is a script and a markdown file rather than a service.
 
 ---
 
-MIT. Issues and pull requests welcome.
+**MIT.** Issues and pull requests welcome — especially from anyone who has run this on a codebase that isn't a fixture.
