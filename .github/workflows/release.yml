@@ -1,0 +1,51 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Tag must match scripts/lib/version.py
+        run: |
+          set -eu
+          tag="${GITHUB_REF_NAME#v}"
+          declared="$(python -c 'import sys; sys.path.insert(0, "scripts"); from lib.version import VERSION; print(VERSION)')"
+          if [ "$tag" != "$declared" ]; then
+            echo "tag $GITHUB_REF_NAME does not match VERSION $declared"; exit 1
+          fi
+
+      - name: Tests must pass on the tag
+        run: python -m unittest discover -s scripts/test
+
+      - name: Package
+        run: |
+          set -eu
+          name="pareto-triage-${GITHUB_REF_NAME}"
+          mkdir -p "$name"
+          cp -R scripts references SKILL.md README.md LICENSE CHANGELOG.md "$name"/
+          find "$name" -name '__pycache__' -type d -prune -exec rm -rf {} +
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" \
+            "pareto-triage-${GITHUB_REF_NAME}.tar.gz" \
+            "pareto-triage-${GITHUB_REF_NAME}.tar.gz.sha256" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file CHANGELOG.md

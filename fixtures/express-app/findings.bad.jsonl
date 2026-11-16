@@ -1,0 +1,2 @@
+{"id":"f_0000b2","class":"failure-mode","taxonomy":"missing-idempotency","file":"src/routes.ts","line":9,"evidence":"await chargeCard(event.amount) // quoted text that is not in the file","counter_evidence":"Maybe fine.","detector":"llm","confidence":"med","reach":5,"blast":5,"silence":3}
+{"id":"f_0000c3","class":"failure-mode","taxonomy":"made-up-category","file":"src/billing.ts","line":3,"evidence":"await fetch(","counter_evidence":"","detector":"llm","confidence":"high","reach":5,"blast":5,"silence":9}
