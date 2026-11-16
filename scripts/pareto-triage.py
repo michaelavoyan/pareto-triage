@@ -229,7 +229,8 @@ def cmd_gate(positional, flags):
 
     reasons = []
     if not supported:
-        reasons.append("no source files in a language this tool supports (typescript, javascript, python)")
+        reasons.append("no source files in a language this tool supports "
+                       "(typescript, javascript, python, java, kotlin)")
     elif supported_loc < min_loc:
         reasons.append(
             "only %s non-blank lines of supported code; minimum is %s — too few findings to rank honestly"
