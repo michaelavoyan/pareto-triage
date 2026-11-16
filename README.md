@@ -1,5 +1,14 @@
 # pareto-triage
 
+<p>
+  <img alt="tests" src="https://github.com/michaelavoyan/pareto-triage/actions/workflows/test.yml/badge.svg">
+  <img alt="license" src="https://img.shields.io/badge/license-MIT-blue">
+  <img alt="python" src="https://img.shields.io/badge/python-3.9%2B-blue">
+  <img alt="dependencies" src="https://img.shields.io/badge/dependencies-none-brightgreen">
+</p>
+
+*Find the five fixes that matter, and forget the other two hundred and ninety-five.*
+
 Three hundred things look wrong in your codebase. You have a week. Which five do you fix?
 
 This ranks them for you. It scans the code, weighs each problem by how much damage it can do against how much work it takes to fix, and tells you where the leverage is.
@@ -35,10 +44,12 @@ You get `out/report.html`. If the repo is too small or has no entrypoints, it re
 
 One HTML file, no dashboard, no login. It opens with one of four answers:
 
-- **shortcut** — the 80/20 holds. Fix these and stop.
-- **concentrated-expensive** — real risk, expensive fix. Schedule it.
-- **moderate** — spend an effort budget, don't chase the curve.
-- **flat** — no shortcut exists, and it says so rather than inventing one.
+| Verdict | What it means | What you do |
+|---|---|---|
+| `shortcut` | the 80/20 holds | fix these, stop |
+| `concentrated-expensive` | real risk, expensive fix | schedule it properly |
+| `moderate` | the curve is gentle | spend an effort budget |
+| `flat` | no shortcut exists | stop looking for one |
 
 Even a flat repo gets numbers: what 10% of the work buys, what half buys. "80% of the impact for 60% of the effort" is still a plan you can take to a standup.
 
@@ -78,4 +89,4 @@ No account, no upload, no telemetry. Your code stays on your disk, and the only 
 
 ---
 
-MIT. Issues and pull requests welcome.
+**MIT.** Issues and pull requests welcome — especially from anyone who has run this on a codebase that isn't a fixture.
