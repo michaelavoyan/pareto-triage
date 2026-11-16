@@ -4,7 +4,7 @@ Three hundred things look wrong in your codebase. You have a week. Which five do
 
 This ranks them for you. It scans the code, weighs each problem by how much damage it can do against how much work it takes to fix, and tells you where the leverage is.
 
-I built it because every audit I'd been handed gave me a list. Long, alphabetical, sorted by nothing in particular. I wanted the other thing: the smallest set of fixes that buys the biggest return, and a clean way to park the rest until the next iteration. Least effort in, most business value out.
+I built it because every audit I'd been handed gave me a list. Long, alphabetical, sorted by nothing in particular. I wanted the other thing: the smallest set of fixes that buys the biggest return, and a clear way to park the rest until the next iteration. Nothing gets written off — the aim is still everything, eventually. Each round just takes the slice with the most value for the least effort, so the business feels the improvement while the rest waits its turn.
 
 ## Try it
 
