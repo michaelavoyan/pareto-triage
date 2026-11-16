@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1
+
+- README rewritten for a first-time reader: usage before explanation, the four
+  verdicts as a table, badges, and the first-person note on why the tool exists.
+- The changelog no longer opens with an empty `Unreleased` heading.
+
 ## 0.1.0
 
 First release.
