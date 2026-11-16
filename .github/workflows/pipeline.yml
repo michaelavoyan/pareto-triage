@@ -1,0 +1,57 @@
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  pipeline:
+    name: end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile every script
+        run: python -m compileall -q scripts
+
+      - name: Gate, context, detect, rank, report on both fixtures
+        run: |
+          set -eu
+          for fixture in fixtures/express-app fixtures/python-app; do
+            out="$(mktemp -d)"
+            python scripts/pareto-triage.py gate "$fixture" --min-loc 1 --out "$out"
+            python scripts/pareto-triage.py context "$fixture" --out "$out"
+            python scripts/pareto-triage.py detect "$fixture" --out "$out"
+            python scripts/pareto-triage.py rank "$fixture" --out "$out"
+            python scripts/pareto-triage.py report "$fixture" --out "$out"
+            test -s "$out/report.html"
+            test -s "$out/ranked.json"
+            grep -qi "<!doctype html>" "$out/report.html"
+          done
+
+      - name: A refusal exits 1 and writes no report
+        run: |
+          set -eu
+          out="$(mktemp -d)"
+          if python scripts/pareto-triage.py gate fixtures/tiny --out "$out"; then
+            echo "expected the gate to refuse fixtures/tiny"; exit 1
+          fi
+          test ! -f "$out/report.html"
+
+      - name: Stale ranking is refused
+        run: |
+          set -eu
+          out="$(mktemp -d)"
+          python scripts/pareto-triage.py gate fixtures/python-app --min-loc 5 --out "$out"
+          python scripts/pareto-triage.py detect fixtures/python-app --out "$out"
+          python scripts/pareto-triage.py rank fixtures/python-app --out "$out"
+          printf '\n# edited\n' >> fixtures/python-app/main.py
+          if python scripts/pareto-triage.py report fixtures/python-app --out "$out"; then
+            echo "expected a stale ranking to be refused"; exit 1
+          fi
+          git checkout -- fixtures/python-app/main.py

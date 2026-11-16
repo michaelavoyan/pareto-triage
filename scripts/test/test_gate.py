@@ -1,0 +1,112 @@
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+CLI = HERE.parent / "pareto-triage.py"
+FIXTURES = HERE.parent.parent / "fixtures"
+
+
+def run(args):
+    return subprocess.run(
+        [sys.executable, str(CLI)] + [str(a) for a in args],
+        capture_output=True,
+        text=True,
+    )
+
+
+class GateTests(unittest.TestCase):
+    def test_refuses_repo_without_supported_code_or_entrypoints(self):
+        with tempfile.TemporaryDirectory() as out:
+            result = run(["gate", FIXTURES / "tiny", "--out", out])
+            scope = json.loads((Path(out) / "scope.json").read_text())
+            self.assertEqual(result.returncode, 1)
+            self.assertFalse(scope["gate"]["ok"])
+            reasons = " / ".join(scope["gate"]["reasons"])
+            self.assertIn("supports", reasons)
+            self.assertIn("entrypoints", reasons)
+            self.assertEqual(scope["entrypoints"], [])
+
+    def test_passes_small_express_app_with_overridden_threshold(self):
+        with tempfile.TemporaryDirectory() as out:
+            result = run(["gate", FIXTURES / "express-app", "--min-loc", "10", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            scope = json.loads((Path(out) / "scope.json").read_text())
+            self.assertTrue(scope["gate"]["ok"])
+            self.assertIn("express", [f["name"] for f in scope["frameworks"]])
+            self.assertEqual(scope["tests"]["runner"], "vitest")
+            self.assertGreaterEqual(scope["entrypoint_kinds"]["http"], 2)
+            details = [e["detail"] for e in scope["entrypoints"] if e["kind"] == "http"]
+            self.assertTrue(any("/webhooks/stripe" in d for d in details), details)
+            self.assertTrue(any("/health" in d for d in details), details)
+
+    def test_output_is_deterministic_apart_from_timestamp(self):
+        outputs = []
+        for _ in range(2):
+            with tempfile.TemporaryDirectory() as out:
+                run(["gate", FIXTURES / "express-app", "--min-loc", "10", "--out", out])
+                scope = json.loads((Path(out) / "scope.json").read_text())
+                scope["generated_at"] = None
+                outputs.append(json.dumps(scope, sort_keys=True))
+        self.assertEqual(outputs[0], outputs[1])
+
+    def test_refusal_does_not_claim_a_report_exists(self):
+        with tempfile.TemporaryDirectory() as out:
+            result = run(["gate", FIXTURES / "tiny", "--out", out])
+            self.assertIn("REFUSED", result.stdout)
+            self.assertIn("Do not improvise a report", result.stdout)
+
+
+class ValidateTests(unittest.TestCase):
+    def test_accepts_well_formed_finding(self):
+        result = run([
+            "validate",
+            FIXTURES / "express-app" / "findings.good.jsonl",
+            "--repo", FIXTURES / "express-app",
+        ])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("1 valid", result.stdout)
+
+    def test_rejects_hallucinated_evidence_and_missing_counter_evidence(self):
+        result = run([
+            "validate",
+            FIXTURES / "express-app" / "findings.bad.jsonl",
+            "--repo", FIXTURES / "express-app",
+        ])
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("hallucination guard", result.stdout)
+        self.assertIn("counter_evidence", result.stdout)
+        self.assertIn("taxonomy must be one of", result.stdout)
+
+    def test_empty_input_is_valid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "empty.jsonl"
+            empty.write_text("")
+            result = run(["validate", empty, "--repo", FIXTURES / "express-app"])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("empty input is a valid result", result.stdout)
+
+
+class PhaseGateTests(unittest.TestCase):
+    def test_unimplemented_phase_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as out:
+            result = run(["verify", FIXTURES / "express-app", "--out", out])
+            self.assertEqual(result.returncode, 2)
+            self.assertIn("run: pareto-triage gate", result.stderr)
+            self.assertEqual(list(Path(out).iterdir()), [])
+
+    def test_each_phase_requires_its_input_artifact(self):
+        for command, hint in (("detect", "run: pareto-triage gate"), ("rank", "run: pareto-triage gate"),
+                              ("report", "run: pareto-triage rank")):
+            with tempfile.TemporaryDirectory() as out:
+                result = run([command, FIXTURES / "express-app", "--out", out])
+                self.assertEqual(result.returncode, 2, command)
+                self.assertIn(hint, result.stderr, command)
+                self.assertEqual(list(Path(out).iterdir()), [], command)
+
+
+if __name__ == "__main__":
+    unittest.main()

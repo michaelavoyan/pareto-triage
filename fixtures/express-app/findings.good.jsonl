@@ -1,0 +1,1 @@
+{"id":"f_0000a1","class":"failure-mode","taxonomy":"missing-idempotency","file":"src/routes.ts","line":9,"evidence":"await chargeCard(event.amount)","counter_evidence":"Stripe may guarantee single delivery per event id.","detector":"llm","confidence":"med","reach":5,"blast":5,"silence":3}
