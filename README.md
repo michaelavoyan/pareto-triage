@@ -9,6 +9,8 @@ This ranks them for you. It scans the code, weighs each problem by how much dama
 > **I wanted the other thing:** the smallest set of fixes that buys the biggest return, and a clear way to park the rest until the next iteration.
 >
 > **Nothing gets written off.** The aim is still everything, eventually. Each round takes the slice with the most value for the least effort, so the business feels the improvement while the rest waits its turn.
+>
+> The same shape shows up almost everywhere, by the way. A few customers, a few habits, a few people — most of the effect comes from a small part of the input. Code is just where I can measure it.
 
 ## Try it
 
