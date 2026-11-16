@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0
+
+- Java and Kotlin are supported languages: the gate counts their lines, imports
+  resolve across Maven/Gradle layouts, and methods, `fun`s and class bodies
+  become candidate sites.
+- Entrypoints: `public static void main`, `fun main`, Spring and JAX-RS
+  annotations.
+- Same-package Java edges require the peer type name to appear in the importing
+  file; visibility alone does not lift a whole package.
+- **No JVM defect rules yet.** On a Java or Kotlin repo `detect` returns zero
+  findings, so a report covers reachability and phase-2 judgment only.
+- README states the supported languages and that limit.
+
 ## 0.1.1
 
 - README rewritten for a first-time reader: usage before explanation, the four
