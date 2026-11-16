@@ -4,8 +4,8 @@ Phase 2 asks a model to judge one function at a time. It needs a bounded,
 deterministic list of functions that are actually reachable from an entrypoint,
 not the whole repository. This module produces that list.
 
-What it is not: a parser. Python uses `ast`; JavaScript and TypeScript use
-brace matching over regex-found headers. The JavaScript side is approximate by
+What it is not: a parser. Python uses `ast`; JavaScript, TypeScript, Java and
+Kotlin use brace matching over regex-found headers. All of it is approximate by
 design and documented in references/entrypoints.md. A site whose bounds are
 wrong produces evidence that fails `pareto-triage validate`, which is a visible
 failure rather than a silent one.
@@ -16,11 +16,13 @@ import re
 
 JS_EXT = {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}
 PY_EXT = {".py"}
+JVM_EXT = {".java", ".kt", ".kts"}
 
 LANG_BY_EXT = {
     ".ts": "ts", ".tsx": "ts", ".mts": "ts", ".cts": "ts",
     ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
     ".py": "py",
+    ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
 }
 
 MAX_SITES_DEFAULT = 400
@@ -75,6 +77,52 @@ INLINE_ROUTE_RES = [
                r"(['\"`])([^'\"`]+)\2\s*,\s*(?:async\s+)?function\s*\*?\s*[A-Za-z_$\s]*\(", re.M),
 ]
 
+JVM_MODIFIERS = (
+    r"(?:public|protected|private|static|final|abstract|synchronized|native|default|"
+    r"strictfp|transient|volatile|sealed|non-sealed)"
+)
+KOTLIN_MODIFIERS = (
+    r"(?:public|private|protected|internal|open|final|abstract|override|suspend|inline|"
+    r"infix|operator|tailrec|external|expect|actual|data|enum|sealed|annotation|value|"
+    r"inner|companion|fun)"
+)
+ANNOTATION_PREFIX = r"(?:@[A-Za-z_]\w*(?::[A-Za-z_]\w*)*(?:\([^)\n]*\))?[ \t]+)*"
+
+# Java: `[modifiers] [<T>] [ReturnType] name(params)`. The return type is
+# optional so constructors match; nothing here proves the name is a declaration,
+# so `_jvm_sites` checks for a body and rejects call statements.
+JAVA_METHOD_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + JVM_MODIFIERS + r"[ \t]+)*"
+    r"(?:<[^>\n]+>[ \t]+)?"
+    r"(?:[\w$.<>\[\],?]+[ \t]+)?"
+    r"([A-Za-z_$][\w$]*)[ \t]*\(", re.M)
+
+JAVA_CLASS_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + JVM_MODIFIERS + r"[ \t]+)*"
+    r"(?:class|interface|enum|record)[ \t]+([A-Za-z_$][\w$]*)", re.M)
+
+# Kotlin: `[modifiers] fun [<T>] [Receiver.]name(params)`. A receiver type is how
+# `fun String.slug()` is written; dropping it keeps names bare, as in JS sites.
+KOTLIN_FUN_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + KOTLIN_MODIFIERS + r"[ \t]+)*"
+    r"fun[ \t]+(?:<[^>\n]+>[ \t]+)?"
+    r"(?:[A-Za-z_][\w.<>?, ]*\.[ \t]*)?"
+    r"([A-Za-z_]\w*)[ \t]*\(", re.M)
+
+KOTLIN_CLASS_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + KOTLIN_MODIFIERS + r"[ \t]+)*"
+    r"(?:class|interface|object)[ \t]+([A-Za-z_]\w*)", re.M)
+
+JVM_KEYWORDS = {
+    "if", "for", "while", "switch", "catch", "return", "new", "throw", "else",
+    "do", "try", "synchronized", "assert", "case", "break", "continue", "this",
+    "super", "package", "import", "class", "interface", "enum", "record",
+}
+
 
 def _line_of(text, index):
     return text.count("\n", 0, index) + 1
@@ -82,6 +130,18 @@ def _line_of(text, index):
 
 def _skip_string(text, index):
     quote = text[index]
+    # Java text blocks and Kotlin raw strings: an unterminated-at-first-quote
+    # run would desynchronise every brace after it.
+    if quote == '"' and text.startswith('"""', index):
+        index += 3
+        while index < len(text):
+            if text.startswith('"""', index):
+                return index + 3
+            if text[index] == "\\":
+                index += 2
+                continue
+            index += 1
+        return index
     index += 1
     while index < len(text):
         char = text[index]
@@ -182,6 +242,190 @@ def _js_sites(text, rel):
                 "end": _line_of(text, max(match.start(), end - 1)),
             })
 
+    return out
+
+
+def _paren_end(text, open_index):
+    """Return the index of the paren closing text[open_index], or -1."""
+    depth = 0
+    index = open_index
+    while index < len(text):
+        char = text[index]
+        if char in "\"'`":
+            index = _skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            close = text.find("*/", index + 2)
+            index = len(text) if close < 0 else close + 2
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
+def _jvm_body(text, index, expression_body):
+    """Find a method body from just after the closing paren.
+
+    Returns ("brace", open_index), ("expression", index), or (None, -1). Java
+    allows `throws …` before the brace; Kotlin allows a return type and `where`
+    before either a brace or `= expression`. A blank line or `;`/`}` first means
+    the declaration has no body (interface or abstract member).
+    """
+    limit = min(len(text), index + 400)
+    while index < limit:
+        char = text[index]
+        if char in "\"'`":
+            index = _skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            close = text.find("*/", index + 2)
+            index = len(text) if close < 0 else close + 2
+            continue
+        if char == "{":
+            return "brace", index
+        if char == "=":
+            if expression_body:
+                return "expression", index
+            return None, -1
+        if char in ";}":
+            return None, -1
+        if char == "\n":
+            cursor = index + 1
+            while cursor < len(text) and text[cursor] in " \t\r":
+                cursor += 1
+            if cursor < len(text) and text[cursor] == "\n":
+                return None, -1
+        index += 1
+    return None, -1
+
+
+def _expression_end(text, index):
+    """End of an `= expression` body: its line, extended by open brackets."""
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char in "\"'`":
+            index = _skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            if newline < 0:
+                return len(text) - 1
+            index = newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            close = text.find("*/", index + 2)
+            if close < 0:
+                return len(text) - 1
+            index = close + 2
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "\n" and depth <= 0:
+            return max(0, index - 1)
+        index += 1
+    return len(text) - 1
+
+
+def _class_body(text, index):
+    """The brace that opens a class body, or -1 when the type has none.
+
+    Only the header line and an Allman-style brace on the next line count. A
+    body-less `data class Point(val x: Int)` must not swallow the next class.
+    """
+    line_end = text.find("\n", index)
+    if line_end < 0:
+        line_end = len(text)
+    cursor = index
+    while cursor < line_end:
+        char = text[cursor]
+        if char in "\"'`":
+            cursor = _skip_string(text, cursor)
+            continue
+        if char == "{":
+            return cursor
+        if char == "/" and text.startswith("//", cursor):
+            return -1
+        cursor += 1
+    cursor = line_end
+    while cursor < len(text) and text[cursor] in "\n\r \t":
+        cursor += 1
+    if cursor < len(text) and text[cursor] == "{":
+        return cursor
+    return -1
+
+
+def _type_declaration_before(text, index):
+    """True when `index` names a type, not a call: `new Foo(`, `class Foo(`."""
+    line_start = text.rfind("\n", 0, index) + 1
+    return bool(re.search(r"\b(?:class|interface|enum|record|new)\s+$",
+                          text[line_start:index]))
+
+
+def _annotation_line(lines, line):
+    """Start of a declaration plus annotations on the lines directly above."""
+    index = line - 1
+    while index > 0:
+        previous = lines[index - 1].strip()
+        if not previous.startswith("@") or previous.endswith("("):
+            break
+        index -= 1
+    return index + 1
+
+
+def _jvm_sites(text, rel):
+    lines = text.split("\n")
+    out = []
+    if rel.endswith(".java"):
+        patterns = ((JAVA_METHOD_RE, "method"), (JAVA_CLASS_RE, "class"))
+    else:
+        patterns = ((KOTLIN_FUN_RE, "method"), (KOTLIN_CLASS_RE, "class"))
+    for pattern, kind in patterns:
+        for match in pattern.finditer(text):
+            name = match.group(1)
+            if name in JVM_KEYWORDS:
+                continue
+            if kind == "method" and _type_declaration_before(text, match.start(1)):
+                continue
+            start = _annotation_line(lines, _line_of(text, match.start()))
+            if kind == "class":
+                body = _class_body(text, match.end())
+                if body < 0:
+                    continue
+                close = _match_brace(text, body)
+                end_index = close if close >= 0 else len(text) - 1
+            else:
+                close_paren = _paren_end(text, match.end() - 1)
+                if close_paren < 0:
+                    continue
+                style, body = _jvm_body(text, close_paren + 1, pattern is KOTLIN_FUN_RE)
+                if style is None:
+                    continue
+                if style == "brace":
+                    close = _match_brace(text, body)
+                    end_index = close if close >= 0 else len(text) - 1
+                else:
+                    end_index = _expression_end(text, body)
+            out.append({
+                "name": name,
+                "start": start,
+                "end": max(start, _line_of(text, end_index)),
+            })
     return out
 
 
@@ -298,7 +542,7 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
     for f in files:
         rel = f["rel"]
         ext = f["ext"]
-        if ext not in JS_EXT and ext not in PY_EXT:
+        if ext not in JS_EXT and ext not in PY_EXT and ext not in JVM_EXT:
             continue
         reach = reach_of(rel)
         if reach < min_reach:
@@ -311,6 +555,8 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
             if error:
                 parse_errors.append({"file": rel, "reason": error})
                 continue
+        elif ext in JVM_EXT:
+            found = _jvm_sites(text, rel)
         else:
             found = _js_sites(text, rel)
 

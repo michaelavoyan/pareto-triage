@@ -191,6 +191,165 @@ class JvmImportTests(unittest.TestCase):
             self.assertEqual(targets, set())
 
 
+class JvmSiteTests(unittest.TestCase):
+    def test_java_method_bounds_include_the_annotation_line(self):
+        text = ("package com.acme;\n"
+                "\n"
+                "public class Api {\n"
+                "    @GetMapping(\"/x\")\n"
+                "    public String get() {\n"
+                "        return \"x\";\n"
+                "    }\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Api.java", text)], lambda rel: 5)
+        site = next(s for s in sites if s["function"] == "get")
+        self.assertEqual(site["lines"], [4, 7])
+        self.assertEqual(site["lang"], "java")
+
+    def test_java_call_statements_are_not_sites(self):
+        text = ("package com.acme;\n"
+                "public class Api {\n"
+                "    public void run() {\n"
+                "        helper(1);\n"
+                "        new Thread(() -> helper(2)).start();\n"
+                "    }\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Api.java", text)], lambda rel: 5)
+        self.assertEqual([s["function"] for s in sites], ["run"])
+
+    def test_java_anonymous_class_is_not_a_site(self):
+        text = ("package com.acme;\n"
+                "\n"
+                "public class Api {\n"
+                "    public void run() {\n"
+                "        new Thread(new Runnable() {\n"
+                "            public void run() {\n"
+                "                helper();\n"
+                "            }\n"
+                "        }).start();\n"
+                "    }\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Api.java", text)], lambda rel: 5)
+        self.assertEqual([s["function"] for s in sites], ["run"])
+        self.assertNotIn(sites[0]["function"], ("Runnable", "Thread"))
+
+    def test_java_record_header_is_not_a_method(self):
+        text = ("package com.acme;\n"
+                "public record Point(int x, int y) {\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Point.java", text)], lambda rel: 5)
+        self.assertEqual([(s["function"], s["lines"]) for s in sites], [("Point", [2, 3])])
+
+    def test_java_text_block_with_braces_does_not_break_bounds(self):
+        text = ("package com.acme;\n"
+                "\n"
+                "public class Api {\n"
+                "    public String body() {\n"
+                "        String template = \"\"\"\n"
+                "            {\"a\": 1}\n"
+                "            \"\"\";\n"
+                "        return template;\n"
+                "    }\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Api.java", text)], lambda rel: 5)
+        site = next(s for s in sites if s["function"] == "body")
+        self.assertEqual(site["lines"], [4, 9])
+
+    def test_kotlin_raw_string_with_braces_does_not_break_bounds(self):
+        text = ("package com.acme\n"
+                "fun body(): String {\n"
+                "    val template = \"\"\"\n"
+                "        {\"a\": 1}\n"
+                "        \"\"\"\n"
+                "    return template\n"
+                "}\n")
+        sites, _ = extract_sites([source("com/acme/Api.kt", text)], lambda rel: 5)
+        self.assertEqual([(s["function"], s["lines"]) for s in sites], [("body", [2, 7])])
+
+    def test_java_class_without_methods_is_a_site(self):
+        text = ("package com.acme;\n"
+                "public class Holder {\n"
+                "    public String name;\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Holder.java", text)], lambda rel: 5)
+        self.assertEqual([(s["function"], s["lines"]) for s in sites], [("Holder", [2, 4])])
+
+    def test_java_class_with_methods_yields_only_the_methods(self):
+        text = ("package com.acme;\n"
+                "public class Api {\n"
+                "    public int one() {\n"
+                "        return 1;\n"
+                "    }\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Api.java", text)], lambda rel: 5)
+        self.assertEqual([s["function"] for s in sites], ["one"])
+        self.assertEqual(sites[0]["enclosed_by"], ["Api"])
+
+    def test_java_abstract_method_without_a_body_is_not_a_site(self):
+        text = ("package com.acme;\n"
+                "public interface Api {\n"
+                "    String get(String id);\n"
+                "    int count() throws IOException;\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Api.java", text)], lambda rel: 5)
+        self.assertEqual([s["function"] for s in sites], ["Api"])
+
+    def test_kotlin_fun_bounds_include_the_annotation_line(self):
+        text = ("package com.acme\n"
+                "\n"
+                "class Routes {\n"
+                "    @GetMapping(\"/x\")\n"
+                "    fun greet(name: String): String {\n"
+                "        return name\n"
+                "    }\n"
+                "}\n")
+        sites, _ = extract_sites([source("src/com/acme/Routes.kt", text)], lambda rel: 5)
+        site = next(s for s in sites if s["function"] == "greet")
+        self.assertEqual(site["lines"], [4, 7])
+        self.assertEqual(site["lang"], "kotlin")
+
+    def test_kotlin_expression_body_stays_inside_the_site(self):
+        text = ("package com.acme\n"
+                "fun clock(): Long = System.currentTimeMillis()\n"
+                "fun pair(): List<Int> = listOf(\n"
+                "    1,\n"
+                "    2,\n"
+                ")\n")
+        sites, _ = extract_sites([source("com/acme/clock.kt", text)], lambda rel: 5)
+        bounds = {s["function"]: s["lines"] for s in sites}
+        self.assertEqual(bounds["clock"], [2, 2])
+        self.assertEqual(bounds["pair"], [3, 6])
+
+    def test_kotlin_multiline_annotation_arguments_start_at_the_fun_line(self):
+        text = ("class Routes {\n"
+                "    @RequestMapping(\n"
+                "        value = \"/x\",\n"
+                "        method = RequestMethod.POST,\n"
+                "    )\n"
+                "    fun handle(): String = \"x\"\n"
+                "}\n")
+        sites, _ = extract_sites([source("com/acme/Routes.kt", text)], lambda rel: 5)
+        self.assertEqual([(s["function"], s["lines"]) for s in sites], [("handle", [6, 6])])
+
+    def test_kotlin_file_is_not_parsed_as_java_and_the_reverse(self):
+        java = ("package com.acme;\npublic class Api {\n    public int one() {\n        return 1;\n    }\n}\n")
+        kotlin = ("package com.acme\nobject Api {\n    fun one(): Int {\n        return 1\n    }\n}\n")
+        files = [source("src/com/acme/Api.java", java), source("src/com/acme/Api.kt", kotlin)]
+        sites, _ = extract_sites(files, lambda rel: 5)
+        self.assertEqual(sorted((s["file"].rsplit(".", 1)[1], s["function"]) for s in sites),
+                         [("java", "one"), ("kt", "one")])
+
+    def test_jvm_files_at_reach_one_are_excluded(self):
+        files = [
+            source("src/com/acme/Api.java", "public class Api {\n    void go() {\n    }\n}\n"),
+            source("src/com/acme/Orphan.java", "public class Orphan {\n    void go() {\n    }\n}\n"),
+        ]
+        sites, summary = extract_sites(
+            files, lambda rel: 5 if rel.endswith("Api.java") else 1)
+        self.assertEqual({s["file"] for s in sites}, {"src/com/acme/Api.java"})
+        self.assertEqual(summary["unreachable_source_files"], 1)
+
+
 class JvmEntryTests(unittest.TestCase):
     def entries(self, rel, text):
         return extract_entrypoints([source(rel, text)])
@@ -289,6 +448,39 @@ class JvmFixtureTests(unittest.TestCase):
         pricing = "src/main/java/com/acme/service/PricingService.java"
         self.assertIn(pricing, graph[JAVA_SERVICE])          # used in a field
         self.assertNotIn(JAVA_SERVICE, graph[pricing])       # visible, never named
+
+    def test_java_sites_have_annotation_bounds_and_class_collapses(self):
+        records = context_records(JAVA)
+        sites = {(r["file"], r["function"]): r for r in records}
+
+        listed = sites[(JAVA_CONTROLLER, "listOrders")]
+        self.assertEqual(listed["lines"], [17, 20])   # @GetMapping line through the closing brace
+        self.assertEqual(listed["reach"], 5)
+        self.assertEqual(listed["lang"], "java")
+        self.assertEqual(listed["enclosed_by"], ["OrdersController"])
+
+        self.assertIn((JAVA_SERVICE, "create"), sites)
+        self.assertGreater(sites[(JAVA_SERVICE, "create")]["reach"], 1)
+
+        # A class with no methods is the site; a class with methods is not.
+        customer = sites[("src/main/java/com/acme/model/Customer.java", "Customer")]
+        self.assertEqual(customer["lines"], [3, 7])
+        # The one site named like the class is the constructor, not the class body.
+        self.assertEqual(sites[(JAVA_CONTROLLER, "OrdersController")]["lines"], [13, 15])
+
+    def test_kotlin_sites_cover_annotated_methods_and_expression_bodies(self):
+        records = context_records(KOTLIN)
+        sites = {(r["file"], r["function"]): r for r in records}
+
+        greet = sites[(KOTLIN_ROUTES, "greet")]
+        self.assertEqual(greet["lines"], [11, 14])
+        self.assertEqual(greet["lang"], "kotlin")
+        self.assertEqual(greet["reach"], 5)
+        self.assertEqual(sites[(KOTLIN_ROUTES, "createGreeting")]["lines"], [16, 17])
+        self.assertEqual(sites[("src/main/kotlin/com/acme/service/clock.kt", "clock")]["lines"],
+                         [5, 5])
+        self.assertEqual(sites[("src/main/kotlin/com/acme/model/Greeting.kt", "Greeting")]["lines"],
+                         [3, 6])
 
     def test_kotlin_lowercase_and_java_imports_are_reachable(self):
         files = fixture_files(KOTLIN)
