@@ -59,6 +59,8 @@ Even a flat repo gets numbers: what 10% of the work buys, what half buys. "80% o
 
 The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
 
+Java and Kotlin are scanned for entrypoints and reachability. None of the 22 rules is a JVM rule yet, so `detect` finds nothing there.
+
 The maths never reaches the model. Two people running the same commands get the same ranking.
 
 ## Terminal instead
