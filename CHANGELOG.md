@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1
+
+- Test code is excluded from candidate sites, import edges and entrypoints:
+  `androidTest/`, `test/`, `*Test`, `*Tests`, `*IT`, `*Spec`, Python `test_*`,
+  and `.test`/`.spec` files. On Signal-Android the first candidate sites were
+  test helpers; they are now production classes.
+- `report --open` renders and opens the HTML board; the skill requires ending a
+  run with the board open.
+
 ## 0.2.0
 
 - Java and Kotlin are supported languages: the gate counts their lines, imports
