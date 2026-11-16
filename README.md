@@ -4,6 +4,8 @@ Three hundred things look wrong in your codebase. You have a week. Which five do
 
 This ranks them for you. It scans the code, weighs each problem by how much damage it can do against how much work it takes to fix, and tells you where the leverage is.
 
+I built it because every audit I'd been handed gave me a list. Long, alphabetical, sorted by nothing in particular. I wanted the other thing: the three fixes that quietly buy the most, and permission to ignore the rest.
+
 ## Try it
 
 Python 3.9, no packages, no network.
@@ -64,6 +66,10 @@ It has never audited a real repository: the tests run on three fixtures. Treat y
 
 Secrets are masked in `report.html` and `report.json`. `out/defects.jsonl` keeps the raw line, so don't commit `out/`.
 
+## Why I keep it small
+
+No account, no upload, no telemetry. Your code stays on your disk, and the only thing that leaves is the HTML you choose to show someone. That was the whole design constraint, and it is why the tool is a script and a markdown file rather than a service.
+
 ---
 
-MIT.
+MIT. Issues and pull requests welcome.
