@@ -2,69 +2,79 @@
 
 Three hundred things look wrong in your codebase. You have a week. Which five do you fix?
 
-This answers that. It scans the code and ranks what it finds by impact per unit of effort. The bet is Pareto: a few fixes buy most of the robustness. The tool tests that bet on your codebase rather than assuming it.
+That's the question this answers. It scans the code, ranks what it finds by impact per unit of effort, and tells you which fixes actually buy the most robustness.
 
-Either way you get a number. If 80% of the impact costs 12% of the work, that's the headline. If it costs 60%, the report says 60% — and still shows the best set you can buy: what 10% of the effort gets you, what 30% gets you, where the curve bends. There is no page that just says "no shortcut, good luck".
+## How it works
 
-## What it does
+It starts at your entrypoints — routes, CLI commands, cron jobs — and collects the functions a request can really reach. Then 22 rules look for facts: `eval`, shell injection, disabled TLS checks, committed keys, bare `except`, mutable defaults.
 
-It walks the code from its entrypoints — routes, CLI commands, cron jobs — and collects the functions a request can actually reach. Then it runs 22 rules over them: `eval`, shell injection, disabled TLS checks, committed keys, bare `except`, mutable defaults. Those are facts, not opinions.
+The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent, one function at a time. It has to quote the line it's complaining about. Invent the quote and the finding is thrown out.
 
-Everything that needs judgment — missing timeouts, swallowed errors, no idempotency — is where the agent earns its keep. It judges one function at a time and has to quote the line it's talking about. Fabricate the quote and the tool rejects the finding.
+The arithmetic never goes to the model. Impact, effort, clusters, concentration: computed, so two people get the same ranking.
 
-Then the arithmetic happens in code, not in a model's head. Impact, effort, clusters, and how much of the impact the top fifth actually carries. The report says one of four things: `shortcut` (the 80/20 holds, fix these and ignore the rest), `concentrated-expensive` (the risk is real, the fix is not cheap), `moderate`, or `flat` — the bet failed, there is no shortcut, and pretending otherwise would be the one lie this tool refuses to tell.
+## What you get
 
-You get one HTML file. No JavaScript, no dashboard, no login.
+One HTML file. No JavaScript, no dashboard, no login.
+
+It opens with the shape of your problem:
+
+- **shortcut** — the 80/20 holds. Fix these, ignore the rest.
+- **concentrated-expensive** — the risk is real, the fix is not cheap.
+- **moderate** — use an effort budget.
+- **flat** — there is no shortcut, and the report says so instead of inventing one.
+
+Even then you get numbers. "80% of the impact for 60% of the work" is still a plan. The curve shows what 10%, 30% and half your effort would buy, so you can pick a budget and see the return.
 
 ## Install
 
-Needs Python 3.9. Nothing else. No packages, no network.
+Python 3.9 and nothing else. No packages, no network.
 
 ```sh
 git clone https://github.com/michaelavoyan/pareto-triage ~/Development/pareto-triage
 ln -s ~/Development/pareto-triage ~/.config/opencode/skills/pareto-triage
 ```
 
-Claude Code reads the same file from `~/.claude/skills/`. Any other agent: point it at `SKILL.md`.
+Claude Code reads the same file from `~/.claude/skills/`. Anything else: point it at `SKILL.md`.
 
-## Use it
+## Use
 
-Say this to your agent:
+Ask your agent:
 
 ```
 Use pareto-triage on this repo and tell me what to fix first.
 ```
 
-It runs the phases and hands you `out/report.html`. If the repo is too small or has no entrypoints, it refuses instead of inventing a ranking. That refusal is the feature.
+You get `out/report.html`. If the repo is too small or has no entrypoints, it refuses rather than inventing a ranking. That refusal is the feature.
 
-Prefer the command line? The whole pipeline is seven commands and a report:
+Prefer the terminal? Seven commands:
 
 ```sh
 S=~/Development/pareto-triage/scripts/pareto-triage.py
-python3 $S gate    /path/to/repo
-python3 $S context /path/to/repo
-python3 $S detect  /path/to/repo
-# the agent writes out/failure-modes.jsonl here
-python3 $S validate /path/to/repo/out/failure-modes.jsonl --repo /path/to/repo
-python3 $S rank    /path/to/repo
-python3 $S report  /path/to/repo
-python3 $S verify  /path/to/repo --scaffold   # optional: a probe template per top cluster
+R=/path/to/repo
+
+python3 $S gate    $R     # will it even rank this repo?
+python3 $S context $R     # functions worth judging
+python3 $S detect  $R     # the facts
+# your agent writes $R/out/failure-modes.jsonl here
+python3 $S validate $R/out/failure-modes.jsonl --repo $R
+python3 $S rank    $R     # scores and shape
+python3 $S report  $R     # out/report.html
 ```
 
-`pareto-triage help` lists the rest, including `--fix` for proving a patch turns red into green.
+`pareto-triage help` has the rest, including `verify --fix` for proving a patch turns a failing probe green.
 
 ## What it won't do
 
-It won't see through a dependency-injection container, an event bus, or a string-built route. Reachability follows imports, takes `tsconfig` aliases and workspace names into account, and stops at three hops by default.
+It won't see through a dependency-injection container, an event bus, or a route built from a string. Reachability follows imports, understands `tsconfig` aliases and workspace names, and stops three hops out by default.
 
-It won't hand you a percentage you can quote. If the shape is flat, it says flat.
+It won't hand you a percentage you can quote. If the shape is flat, the report says flat.
 
-And it hasn't audited a real repository yet — every test runs on three fixtures. Treat the first run on your code as an experiment, not a verdict.
+And it has never audited a real repository yet — the tests run on three fixtures. Treat your first run as an experiment, not a verdict.
 
-## What it will not publish
+## Secrets
 
-Secrets. Detected keys are masked in `report.html` and `report.json` before they're written. `out/defects.jsonl` still holds the raw line, so don't commit `out/`.
+Detected keys are masked before `report.html` and `report.json` are written. `out/defects.jsonl` keeps the raw line, so don't commit `out/`.
 
 ---
 
-MIT. Ideas and bug reports welcome.
+MIT. Issues and pull requests welcome.
