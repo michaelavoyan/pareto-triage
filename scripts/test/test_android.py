@@ -13,7 +13,8 @@ FIXTURES = SCRIPTS.parent / "fixtures"
 
 sys.path.insert(0, str(SCRIPTS))
 from lib.entry import entrypoint_counts, extract_entrypoints  # noqa: E402
-from lib.imports import SEED_BY_KIND, compute_reach, seeds_from_entrypoints  # noqa: E402
+from lib.imports import (SEED_BY_KIND, compute_reach, entry_paths,
+                         seeds_from_entrypoints)  # noqa: E402
 from lib.walk import walk  # noqa: E402
 
 ANDROID = "android-app"
@@ -25,10 +26,19 @@ JAVA_SERVICE = JAVA + "SyncService.java"
 JAVA_RECEIVER = JAVA + "SmsReceiver.java"
 JAVA_APPLICATION = JAVA + "AcmeApplication.java"
 JAVA_PLAIN = JAVA + "PlainThing.java"
+JAVA_BASE_FRAGMENT = JAVA + "BaseFragment.java"
+JAVA_LOGGING_FRAGMENT = JAVA + "LoggingFragment.java"
+JAVA_INBOX_FRAGMENT = JAVA + "InboxFragment.java"
+JAVA_BASE_ACTIVITY = JAVA + "BaseActivity.java"
+JAVA_MYSTERY = JAVA + "MysteryScreen.java"
 KOTLIN_ACTIVITY = KOTLIN + "FeedActivity.kt"
+KOTLIN_PASSPHRASE = KOTLIN + "PassphraseRequiredActivity.kt"
+KOTLIN_CONVERSATION = KOTLIN + "ConversationActivity.kt"
 KOTLIN_WORKER = KOTLIN + "UploadWorker.kt"
 KOTLIN_RECEIVER = KOTLIN + "BootReceiver.kt"
 KOTLIN_APPLICATION = KOTLIN + "AcmeApp.kt"
+KOTLIN_BASE_SERVICE = KOTLIN + "BaseSyncService.kt"
+KOTLIN_SYNC_SERVICE = KOTLIN + "BackgroundSyncService.kt"
 KOTLIN_PLAIN = KOTLIN + "PlainFormatter.kt"
 
 
@@ -101,10 +111,40 @@ class FixtureComponentTests(unittest.TestCase):
             self.assertEqual([e for e in self.entries if e["file"] == rel], [], rel)
             self.assertNotIn(rel, self.seeds)
 
+    def test_a_java_project_base_chain_is_seeded_from_its_component_ancestor(self):
+        for rel, name in ((JAVA_BASE_FRAGMENT, "BaseFragment"),
+                          (JAVA_LOGGING_FRAGMENT, "LoggingFragment"),
+                          (JAVA_INBOX_FRAGMENT, "InboxFragment")):
+            entry = self.one(rel)
+            self.assertEqual((entry["kind"], entry["detail"]), ("ui", "ACTIVITY %s" % name), rel)
+            self.assertEqual(self.seeds[rel], 5, rel)
+
+    def test_a_kotlin_project_base_chain_crosses_into_the_java_table(self):
+        # ConversationActivity -> PassphraseRequiredActivity (Kotlin)
+        # -> BaseActivity (Java) -> AppCompatActivity.
+        for rel, name in ((KOTLIN_PASSPHRASE, "PassphraseRequiredActivity"),
+                          (KOTLIN_CONVERSATION, "ConversationActivity"),
+                          (JAVA_BASE_ACTIVITY, "BaseActivity")):
+            entry = self.one(rel)
+            self.assertEqual((entry["kind"], entry["detail"]), ("ui", "ACTIVITY %s" % name), rel)
+            self.assertEqual(self.seeds[rel], 5, rel)
+
+    def test_a_project_service_chain_keeps_the_background_kind(self):
+        for rel, name in ((KOTLIN_BASE_SERVICE, "BaseSyncService"),
+                          (KOTLIN_SYNC_SERVICE, "BackgroundSyncService")):
+            entry = self.one(rel)
+            self.assertEqual((entry["kind"], entry["detail"]),
+                             ("background", "SERVICE %s" % name), rel)
+            self.assertEqual(self.seeds[rel], 4, rel)
+
+    def test_an_unresolvable_base_is_not_seeded(self):
+        self.assertEqual([e for e in self.entries if e["file"] == JAVA_MYSTERY], [])
+        self.assertNotIn(JAVA_MYSTERY, self.seeds)
+
     def test_counts_include_the_android_kinds(self):
         counts = entrypoint_counts(self.entries)
-        self.assertEqual(counts["ui"], 2)
-        self.assertEqual(counts["background"], 4)
+        self.assertEqual(counts["ui"], 8)
+        self.assertEqual(counts["background"], 6)
         self.assertEqual(counts["app"], 2)
         self.assertEqual(counts["http"], 0)
 
@@ -114,6 +154,50 @@ class FixtureComponentTests(unittest.TestCase):
         self.assertEqual(reach(JAVA_ACTIVITY), 5)
         self.assertEqual(reach(JAVA_STORE), 4)
         self.assertEqual(reach(JAVA_PLAIN), 1)
+
+
+class BestPathTests(unittest.TestCase):
+    """The call path names the best root, not whichever BFS touched it first."""
+
+    def test_a_seed_five_path_beats_a_seed_three_path(self):
+        files = [
+            source("app/ui.ts", "import { shared } from './shared'\n"
+                                "export const ui = shared\n"),
+            source("app/cli.ts", "import { shared } from './shared'\n"
+                                 "export const cli = shared\n"),
+            source("app/shared.ts", "export const shared = 1\n"),
+        ]
+        paths = entry_paths(files, {"app/ui.ts", "app/cli.ts"},
+                            seeds={"app/ui.ts": 5, "app/cli.ts": 3})
+        self.assertEqual(paths["app/shared.ts"], ["app/ui.ts", "app/shared.ts"])
+
+    def test_the_shortest_path_wins_inside_one_seed(self):
+        files = [
+            source("app/direct.ts", "import './shared'\n"),
+            source("app/via.ts", "import './mid'\n"),
+            source("app/mid.ts", "import './shared'\n"),
+            source("app/shared.ts", "export const shared = 1\n"),
+        ]
+        paths = entry_paths(files, {"app/via.ts", "app/direct.ts"},
+                            seeds={"app/via.ts": 5, "app/direct.ts": 5})
+        self.assertEqual(paths["app/shared.ts"], ["app/direct.ts", "app/shared.ts"])
+
+    def test_a_lower_seed_keeps_its_own_depth_budget(self):
+        # The seed-5 file reaches the seed-3 entry and two files beyond it, but
+        # not the fourth. The seed-3 BFS must still walk through those claimed
+        # files to reach the fourth within its own three hops.
+        files = [
+            source("app/ui.ts", "import './cli'\n"),
+            source("app/cli.ts", "import './a'\n"),
+            source("app/a.ts", "import './b'\n"),
+            source("app/b.ts", "import './c'\n"),
+            source("app/c.ts", "export const c = 1\n"),
+        ]
+        paths = entry_paths(files, {"app/ui.ts", "app/cli.ts"},
+                            seeds={"app/ui.ts": 5, "app/cli.ts": 3})
+        self.assertEqual(paths["app/cli.ts"], ["app/ui.ts", "app/cli.ts"])
+        self.assertEqual(paths["app/c.ts"],
+                         ["app/cli.ts", "app/a.ts", "app/b.ts", "app/c.ts"])
 
 
 class ComponentPatternTests(unittest.TestCase):
@@ -193,10 +277,10 @@ class ComponentPatternTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             scope = json.loads((Path(out) / "scope.json").read_text())
         self.assertTrue(scope["gate"]["ok"])
-        self.assertEqual(scope["entrypoint_kinds"]["ui"], 2)
+        self.assertEqual(scope["entrypoint_kinds"]["ui"], 8)
         line = next(l for l in result.stdout.splitlines() if l.startswith("entries"))
-        self.assertIn("2 ui", line)
-        self.assertIn("4 background", line)
+        self.assertIn("8 ui", line)
+        self.assertIn("6 background", line)
         self.assertIn("2 app", line)
         self.assertNotIn("http", line)
 

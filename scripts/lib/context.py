@@ -504,13 +504,50 @@ def _surrounding(text, start_line, limit=SURROUNDING_LIMIT):
     return "\n".join(unique[:limit]), truncated
 
 
+CONSTRUCTOR_LINE_LIMIT = 5
+
+
+def _is_constructor(site):
+    """True for a constructor declaration, not a class body or a same-named fun.
+
+    The declaration line is the discriminator: a constructor is `[modifiers]
+    ClassName(`, while a Kotlin `fun clock(` starts with `fun` and a class body
+    starts with `class`. The site extractor never emits a Kotlin constructor.
+    """
+    name = site["function"]
+    if name != site["file"].rsplit("/", 1)[-1].split(".")[0]:
+        return False
+    return re.search(
+        r"^[ \t]*" + ANNOTATION_PREFIX
+        + r"(?:(?:public|protected|private|strictfp)[ \t]+)*"
+        + re.escape(name) + r"[ \t]*\(",
+        site["source"], re.M) is not None
+
+
+def _constructor_lines(site):
+    """Lines a constructor occupies, counting its signature and body.
+
+    A six-line constructor is likely to validate or derive state; a three- or
+    four-line one is field assignment. The wider of the recorded span and the
+    physical body is used so a caller that supplies one but not the other still
+    gets the same decision.
+    """
+    span = len(site["source"].split("\n"))
+    if isinstance(site.get("lines"), (list, tuple)) and len(site["lines"]) == 2:
+        span = max(span, site["lines"][1] - site["lines"][0] + 1)
+    return span
+
+
 def is_trivial_accessor(site):
     """A setter, getter, or assignment-only body is not worth judging."""
     body = [line.strip() for line in site["source"].split("\n") if line.strip()]
+    if _is_constructor(site):
+        # A constructor named after its class used to be exempt, which put
+        # four-line field assignments such as MismatchedDevicesException.<init>
+        # on the board. Only a constructor long enough to hold real logic stays.
+        return _constructor_lines(site) <= CONSTRUCTOR_LINE_LIMIT
     if len(body) > 3:
         return False
-    if site["function"] == site["file"].rsplit("/", 1)[-1].split(".")[0]:
-        return False  # a constructor named after its class is not an accessor
     if ACCESSOR_RE.match(site["function"]):
         return True
     inner = body[1:-1]

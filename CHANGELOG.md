@@ -11,9 +11,21 @@
   `Activity`, `AppCompatActivity`, `ComponentActivity`, `FragmentActivity`, or
   `Fragment`; `background` (4) covers `Service`, `IntentService`, `JobService`,
   `Worker`, `BroadcastReceiver`, `ContentProvider`; `app` (3) covers
-  `Application`. Details name the component. A class extending a project base
-  class is not seeded — the base name has to be one of these — so a codebase
-  that wraps every Activity is undercounted and the report says so.
+  `Application`. Details name the component. A class that reaches one of these
+  through project base classes is now seeded too: a type table built from the
+  scanned `.java` and `.kt` files follows the parsed ancestor chain up to four
+  hops, takes the ancestor's kind and seed, and leaves unresolvable and
+  colliding bases to the deterministic path rule. On Signal-Android this
+  recovers 226 UI, 16 background, and 4 `Application` seed files the
+  exact-name rule missed.
+- `call_path` starts at the highest-seed entrypoint that reaches a file, not
+  whichever root a BFS touched first. The multi-source search runs seed 5
+  before 4 before 3; inside one seed the shortest path wins. A UI file whose
+  call path used to begin at a service now begins at the UI entrypoint.
+- Short constructors named after their class are excluded from candidate
+  sites. A constructor is kept only when it spans more than five lines, so
+  field assignment such as `MismatchedDevicesException.<init>` is no longer a
+  judged site while a constructor with real validation stays.
 - Coverage counts judgments, not findings. Phase 2 now writes
   `out/judgments.jsonl`, one `site_id` and finding count per judged site, so a
   judged-and-clean site counts as judged. `rank` unions that file with

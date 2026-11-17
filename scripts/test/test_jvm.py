@@ -465,8 +465,9 @@ class JvmFixtureTests(unittest.TestCase):
         # A class with no methods is the site; a class with methods is not.
         customer = sites[("src/main/java/com/acme/model/Customer.java", "Customer")]
         self.assertEqual(customer["lines"], [3, 7])
-        # The one site named like the class is the constructor, not the class body.
-        self.assertEqual(sites[(JAVA_CONTROLLER, "OrdersController")]["lines"], [13, 15])
+        # The constructor is assignment-only and short, so it is filtered and
+        # the collapsed class body does not reappear under the same name.
+        self.assertNotIn((JAVA_CONTROLLER, "OrdersController"), sites)
 
     def test_kotlin_sites_cover_annotated_methods_and_expression_bodies(self):
         records = context_records(KOTLIN)

@@ -239,6 +239,77 @@ def _android_supertypes(header, kotlin):
     return names
 
 
+# How many class-to-base edges a project base chain may cross before it stops
+# counting. Deep chains are common (`ConversationActivity -> PassphraseRequired
+# Activity -> BaseActivity -> AppCompatActivity`); an unbounded walk would let a
+# cycle invent a root, so the limit is explicit.
+ANDROID_MAX_HOPS = 4
+
+
+def _jvm_type_table(files):
+    """Simple declaration name -> every file/line that declares it.
+
+    Only classes are indexed: an interface cannot be a component, and following
+    one would add edges without a framework instantiation at the end. The table
+    is built from the scanned set alone, so an ancestor outside the repo stays
+    unresolved rather than being guessed from its name.
+    """
+    table = {}
+    for f in files:
+        if f["ext"] not in JVM_EXT:
+            continue
+        kotlin = f["ext"] in (".kt", ".kts")
+        text = f["text"]
+        for match in JVM_CLASS_RE.finditer(text):
+            header = _class_header(text, match.end())
+            table.setdefault(match.group(1), []).append({
+                "file": f["rel"],
+                "line": _line_of(text, match.start(1)),
+                "supertypes": _android_supertypes(header, kotlin),
+            })
+    return table
+
+
+def _pick_declaration(records):
+    """Deterministic pick when one simple name is declared in several files.
+
+    The shallowest path wins, then the lexicographically first, then the first
+    declaration in that file. A scan cannot know which one a build would pick,
+    so this is a rule, not a claim about the module graph.
+    """
+    return min(records, key=lambda d: (d["file"].count("/"), d["file"], d["line"]))
+
+
+def _component_through(supertypes, table, max_hops=ANDROID_MAX_HOPS):
+    """Walk the parsed ancestor chain to an Android component base.
+
+    Direct supertypes are hop 1. A name that is neither a component nor a
+    scanned declaration is a dead branch: the chain stays unresolved and the
+    class is not seeded, because a wrong seed outranks a missing one.
+    """
+    frontier = sorted(set(supertypes))
+    seen = set(frontier)
+    for _ in range(max_hops):
+        for name in frontier:
+            component = ANDROID_COMPONENTS.get(name)
+            if component is not None:
+                return component
+        nxt = set()
+        for name in frontier:
+            records = table.get(name) or []
+            if not records:
+                continue
+            record = _pick_declaration(records)
+            for base in record["supertypes"]:
+                if base not in seen:
+                    seen.add(base)
+                    nxt.add(base)
+        frontier = sorted(nxt)
+        if not frontier:
+            return None
+    return None
+
+
 def _collect(pattern, text, rel, make):
     out = []
     for m in pattern.finditer(text):
@@ -268,6 +339,7 @@ def extract_entrypoints(files):
     found = []
     files = [f for f in files if not is_test_path(f["rel"])]
     known = _known_paths(files)
+    type_table = _jvm_type_table(files)
 
     for f in files:
         text = f["text"]
@@ -374,15 +446,14 @@ def extract_entrypoints(files):
             kotlin = ext in (".kt", ".kts")
             for match in JVM_CLASS_RE.finditer(text):
                 header = _class_header(text, match.end())
-                for base in _android_supertypes(header, kotlin):
-                    component = ANDROID_COMPONENTS.get(base)
-                    if component is None:
-                        continue
-                    kind, label = component
-                    found.append({"kind": kind, "framework": "android", "file": rel,
-                                  "line": _line_of(text, match.start(1)),
-                                  "detail": "%s %s" % (label, match.group(1))})
-                    break
+                component = _component_through(
+                    _android_supertypes(header, kotlin), type_table)
+                if component is None:
+                    continue
+                kind, label = component
+                found.append({"kind": kind, "framework": "android", "file": rel,
+                              "line": _line_of(text, match.start(1)),
+                              "detail": "%s %s" % (label, match.group(1))})
 
         for pattern, label in CONSUMER_RES:
             for hit in _collect(pattern, text, rel, lambda m, l=label: {"kind": "consumer", "detail": l}):
