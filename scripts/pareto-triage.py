@@ -214,7 +214,8 @@ def print_gate(scope):
     print("tests      %s" % (tests["runner"] if tests["present"] else "none detected"))
     print("frameworks %s" % (", ".join(f["name"] for f in scope["frameworks"]) or "none detected"))
     counts = scope["entrypoint_kinds"]
-    shown = ["http", "middleware", "cli", "cron", "consumer", "public-api"]
+    shown = ["http", "ui", "middleware", "background", "consumer", "cron", "cli",
+             "app", "public-api"]
     print("entries    %s"
           % ", ".join("%d %s" % (counts.get(kind, 0), kind)
                       for kind in shown if counts.get(kind, 0)))
@@ -272,8 +273,8 @@ def cmd_gate(positional, flags):
             "only %s non-blank lines of supported code; minimum is %s — too few findings to rank honestly"
             % (num(supported_loc), num(min_loc)))
     if not entrypoints:
-        reasons.append("no entrypoints detected (routes, CLI commands, cron jobs, consumers); "
-                       "reachability would be invented")
+        reasons.append("no entrypoints detected (routes, CLI commands, cron jobs, consumers, "
+                       "Android components); reachability would be invented")
     if walked["truncated"]:
         reasons.append("file cap reached — scan is incomplete")
 

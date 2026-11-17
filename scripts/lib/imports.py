@@ -11,10 +11,13 @@ import re
 
 SEED_BY_KIND = {
     "http": 5,
+    "ui": 5,
     "middleware": 4,
+    "background": 4,
     "consumer": 4,
     "cron": 4,
     "cli": 3,
+    "app": 3,
     "public-api": 3,
 }
 

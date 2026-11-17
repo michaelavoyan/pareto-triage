@@ -7,6 +7,13 @@
   `queueName`, or `partition`. On Signal-Android all 27 remaining consumer
   seeds were Compose pointer `consume()` calls in gesture code. The cost: an
   AMQP `channel.consume(` with a bare receiver is no longer a seed.
+- Android components are entrypoints. `ui` (seed 5) covers classes extending
+  `Activity`, `AppCompatActivity`, `ComponentActivity`, `FragmentActivity`, or
+  `Fragment`; `background` (4) covers `Service`, `IntentService`, `JobService`,
+  `Worker`, `BroadcastReceiver`, `ContentProvider`; `app` (3) covers
+  `Application`. Details name the component. A class extending a project base
+  class is not seeded — the base name has to be one of these — so a codebase
+  that wraps every Activity is undercounted and the report says so.
 - Coverage counts judgments, not findings. Phase 2 now writes
   `out/judgments.jsonl`, one `site_id` and finding count per judged site, so a
   judged-and-clean site counts as judged. `rank` unions that file with

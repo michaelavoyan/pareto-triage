@@ -57,8 +57,8 @@ class ExtractionTests(unittest.TestCase):
 
     def test_counts_cover_every_kind(self):
         counts = entrypoint_counts(self.entries)
-        self.assertEqual(set(counts), {"http", "cli", "cron", "consumer",
-                                       "middleware", "public-api"})
+        self.assertEqual(set(counts), {"http", "cli", "cron", "consumer", "middleware",
+                                       "public-api", "ui", "background", "app"})
         self.assertGreater(counts["middleware"], 0)
 
 
