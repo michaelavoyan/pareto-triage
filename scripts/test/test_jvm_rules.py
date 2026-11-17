@@ -1,0 +1,159 @@
+"""JVM rules: one planted defect per rule, and a line that must stay quiet."""
+
+import json
+import posixpath
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+SCRIPTS = HERE.parent
+CLI = SCRIPTS / "pareto-triage.py"
+FIXTURES = SCRIPTS.parent / "fixtures"
+FIXTURE = FIXTURES / "jvm-rules"
+PREFIX = "src/main/java/com/acme/"
+SAFE = PREFIX + "SafeCounterparts.java"
+
+sys.path.insert(0, str(SCRIPTS))
+from lib.rules import detect_defects  # noqa: E402
+from lib.schema import validate_finding  # noqa: E402
+
+EXPECTED = {
+    PREFIX + "ExecInjection.java": "jvm-exec-injection",
+    PREFIX + "SqlInjection.java": "jvm-sql-injection",
+    PREFIX + "EmptyCatch.java": "jvm-empty-catch",
+    PREFIX + "WeakHash.java": "jvm-weak-hash",
+    PREFIX + "ObjectInput.java": "jvm-object-input-stream",
+}
+
+AXES = {
+    "jvm-exec-injection": ("command-injection", 5, 2),
+    "jvm-sql-injection": ("sql-injection", 5, 2),
+    "jvm-empty-catch": ("swallowed-exception", 4, 3),
+    "jvm-weak-hash": ("weak-hash", 4, 3),
+    "jvm-object-input-stream": ("unsafe-deserialization", 5, 3),
+}
+
+
+def run(args):
+    return subprocess.run([sys.executable, str(CLI)] + [str(a) for a in args],
+                          capture_output=True, text=True)
+
+
+def source(rel, text):
+    return {"rel": rel, "ext": posixpath.splitext(rel)[1], "text": text}
+
+
+class JvmFixtureTests(unittest.TestCase):
+    """One planted defect per rule, and one file that must stay silent."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        cls.out = Path(cls._tmp.name)
+        gate = run(["gate", FIXTURE, "--min-loc", "1", "--out", cls.out])
+        assert gate.returncode == 0, gate.stdout + gate.stderr
+        detect = run(["detect", FIXTURE, "--out", cls.out])
+        assert detect.returncode == 0, detect.stdout + detect.stderr
+        cls.findings = [json.loads(line) for line in
+                        (cls.out / "defects.jsonl").read_text().splitlines() if line.strip()]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def test_each_rule_fires_exactly_once_on_its_own_file(self):
+        self.assertEqual(sorted((f["file"], f["rule"]) for f in self.findings),
+                         sorted(EXPECTED.items()))
+        for rule in EXPECTED.values():
+            self.assertEqual(sum(1 for f in self.findings if f["rule"] == rule), 1, rule)
+
+    def test_the_safe_counterpart_file_is_clean(self):
+        self.assertEqual([f for f in self.findings if f["file"] == SAFE], [])
+
+    def test_findings_are_tool_detected_defects_with_the_documented_axes(self):
+        self.assertEqual(len(self.findings), len(EXPECTED))
+        for finding in self.findings:
+            self.assertEqual(finding["class"], "defect")
+            self.assertEqual(finding["detector"], "tool")
+            # The fixture ships no test runner, so the rubric caps confidence at
+            # "med" and records the reason. Either way the rule is a tool proof.
+            self.assertIn(finding["confidence"], ("high", "med"))
+            if finding["confidence"] == "med":
+                self.assertTrue(finding.get("confidence_capped"))
+                self.assertEqual(finding.get("confidence_reason"), "no test runner detected")
+            self.assertEqual((finding["taxonomy"], finding["blast"], finding["silence"]),
+                             AXES[finding["rule"]])
+
+    def test_detect_output_validates_against_the_sources(self):
+        sources = {p.relative_to(FIXTURE).as_posix(): p.read_text(encoding="utf-8")
+                   for p in FIXTURE.rglob("*") if p.is_file()}
+        for finding in self.findings:
+            self.assertEqual(validate_finding(finding, sources=sources), [], finding["id"])
+
+
+class JvmRuleTests(unittest.TestCase):
+    """The positive fixture is one line per rule; these cover the alternatives."""
+
+    def rules(self, rel, text):
+        findings, _ = detect_defects([source(rel, text)])
+        return [(f["rule"], f["line"], f["evidence"]) for f in findings]
+
+    def test_process_builder_with_concatenation_also_fires(self):
+        text = 'ProcessBuilder builder = new ProcessBuilder("sh " + script);\n'
+        self.assertEqual(self.rules("A.java", text),
+                         [("jvm-exec-injection", 1, text.strip())])
+
+    def test_exec_without_concatenation_is_quiet(self):
+        self.assertEqual(self.rules("A.java", 'Runtime.getRuntime().exec("ls");\n'), [])
+
+    def test_commented_exec_is_quiet(self):
+        self.assertEqual(self.rules("A.java", '// Runtime.getRuntime().exec("rm " + p);\n'), [])
+
+    def test_sql_without_concatenation_is_quiet(self):
+        self.assertEqual(self.rules("A.java",
+                                    'stmt.executeQuery("SELECT * FROM t WHERE id = ?");\n'), [])
+
+    def test_empty_catch_body_spanning_lines_fires_once(self):
+        text = "try {\n    go();\n} catch (IOException e) {\n    // ignored\n}\n"
+        self.assertEqual(self.rules("A.java", text),
+                         [("jvm-empty-catch", 3, "} catch (IOException e) {")])
+
+    def test_catch_with_a_body_is_quiet(self):
+        text = "try {\n    go();\n} catch (IOException e) {\n    log(e);\n}\n"
+        self.assertEqual(self.rules("A.java", text), [])
+
+    def test_braces_inside_a_catch_body_are_not_an_empty_body(self):
+        text = ('try {\n    go();\n} catch (Exception e) {\n'
+                '    throw new IllegalStateException("{}");\n}\n')
+        self.assertEqual(self.rules("A.java", text), [])
+
+    def test_sha256_is_not_a_weak_hash(self):
+        self.assertEqual(self.rules("A.java",
+                                    'MessageDigest.getInstance("SHA-256");\n'), [])
+
+    def test_object_output_stream_is_not_deserialization(self):
+        self.assertEqual(self.rules("A.java", "new ObjectOutputStream(stream);\n"), [])
+
+    def test_kotlin_and_gradle_scripts_are_scanned(self):
+        findings, _ = detect_defects([
+            source("A.kt", 'fun run(p: String) {\n    Runtime.getRuntime().exec("sh " + p)\n}\n'),
+            source("build.gradle.kts", 'val md = MessageDigest.getInstance("SHA-1")\n'),
+        ])
+        self.assertEqual(sorted((f["file"], f["rule"]) for f in findings),
+                         [("A.kt", "jvm-exec-injection"),
+                          ("build.gradle.kts", "jvm-weak-hash")])
+
+    def test_jvm_files_get_the_shared_secret_rules(self):
+        for ext in (".java", ".kt", ".kts"):
+            findings, _ = detect_defects(
+                [source("Key" + ext, 'String key = "AKIAABCDEFGHIJKLMNOP";\n')])
+            self.assertEqual([f["rule"] for f in findings], ["py-secret-aws"], ext)
+        findings, _ = detect_defects([source("Key.kt", "# -----BEGIN RSA PRIVATE KEY-----\n")])
+        self.assertEqual([f["rule"] for f in findings], ["py-secret-pem"])
+
+
+if __name__ == "__main__":
+    unittest.main()
