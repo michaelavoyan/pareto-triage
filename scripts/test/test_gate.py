@@ -67,9 +67,32 @@ class UnsupportedLanguageTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             scope = json.loads((Path(out) / "scope.json").read_text())
             counts = {entry["lang"]: entry["files"] for entry in scope["size"]["unsupported"]}
-            self.assertEqual(counts, {"cpp": 2, "c": 2})
+            self.assertEqual(counts, {"cpp": 2, "c": 1})
             self.assertEqual(scope["languages"]["unsupported"], ["cpp", "c"])
             self.assertIn("cpp (2 files", result.stdout)
+
+    def test_a_header_is_not_counted_as_a_c_file(self):
+        with tempfile.TemporaryDirectory() as out:
+            run(["gate", FIXTURES / "mixed-lang", "--min-loc", "1", "--out", out])
+            scope = json.loads((Path(out) / "scope.json").read_text())
+        c_entry = next(e for e in scope["size"]["unsupported"] if e["lang"] == "c")
+        text = (FIXTURES / "mixed-lang" / "native" / "three.c").read_text()
+        self.assertEqual(c_entry["loc"], sum(1 for line in text.split("\n") if line.strip()))
+        self.assertTrue((FIXTURES / "mixed-lang" / "native" / "four.h").exists())
+
+
+class PythonGateUnchangedTests(unittest.TestCase):
+    """Phase 0/1 add languages. What Python repos print must not move."""
+
+    def test_python_app_gate_output_is_byte_identical(self):
+        golden = (HERE / "golden" / "python-app-gate.txt").read_text()
+        with tempfile.TemporaryDirectory() as out:
+            result = run(["gate", FIXTURES / "python-app", "--min-loc", "10", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            repo = str((FIXTURES / "python-app").resolve())
+            text = result.stdout.replace(repo, "<root>")
+            text = text.replace(str(Path(out).resolve()), "<out>")
+        self.assertEqual(text, golden)
 
 
 class ValidateTests(unittest.TestCase):

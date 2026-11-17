@@ -1,0 +1,11 @@
+pareto-triage 0.3.0 — gate
+repo       <root>
+files      2 scanned, 0 skipped
+code       12 non-blank lines (python 12)
+tests      pytest
+frameworks fastapi
+entries    2 http
+
+GATE: PASS
+
+wrote <out>/scope.json

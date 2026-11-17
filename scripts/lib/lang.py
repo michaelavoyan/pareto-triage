@@ -13,11 +13,19 @@ EXT_LANG = {
     ".go": "go", ".rs": "rust", ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
     ".rb": "ruby",
     ".php": "php", ".cs": "csharp", ".swift": "swift", ".scala": "scala",
-    ".c": "c", ".h": "c", ".cc": "cpp", ".cpp": "cpp", ".hpp": "cpp",
+    ".m": "objc", ".mm": "objc",
+    ".c": "c", ".cc": "cpp", ".cpp": "cpp", ".hpp": "cpp",
     ".vue": "vue", ".svelte": "svelte",
 }
 
-SUPPORTED = {"typescript", "javascript", "python", "java", "kotlin"}
+# `.h` is deliberately absent. Objective-C and C headers are import targets, not
+# code that gets ranked: a header holds no function body and its lines are not
+# implementation. Counting them would double every Objective-C size figure.
+# The graph still indexes them, as sources of edges only.
+
+SUPPORTED = {"typescript", "javascript", "python", "java", "kotlin", "swift", "objc"}
+
+SUPPORTED_LABEL = ", ".join(sorted(SUPPORTED))
 
 MANIFESTS = [
     "package.json", "tsconfig.json", "requirements.txt", "pyproject.toml",
