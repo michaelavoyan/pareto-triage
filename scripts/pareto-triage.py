@@ -385,7 +385,8 @@ def cmd_context(positional, flags):
     seeds = seeds_from_entrypoints(entrypoints)
     reach, reach_meta = compute_reach(files, entry_files, max_depth=depth,
                                       seeds=seeds, aliases=aliases)
-    paths = entry_paths(files, entry_files, max_depth=depth, aliases=aliases)
+    paths = entry_paths(files, entry_files, max_depth=depth, aliases=aliases,
+                        seeds=seeds)
 
     first_entry = {}
     entries_by_file = {}

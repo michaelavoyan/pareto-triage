@@ -7,13 +7,13 @@
 | Kind | How it is found | seed |
 |---|---|---|
 | HTTP route | framework-specific patterns below, including Django `include(`, Spring `@GetMapping`, JAX-RS `@GET` | 5 |
-| Android UI | a class extending `Activity`, `AppCompatActivity`, `ComponentActivity`, `FragmentActivity`, or `Fragment` | 5 |
+| Android UI | a class extending `Activity`, `AppCompatActivity`, `ComponentActivity`, `FragmentActivity`, or `Fragment`, directly or through a project base (up to four hops) | 5 |
 | Middleware | `app.use('<path>', …)` — on the request path, not a route | 4 |
-| Android background | a class extending `Service`, `IntentService`, `JobService`, `Worker`, `BroadcastReceiver`, or `ContentProvider` | 4 |
+| Android background | a class extending `Service`, `IntentService`, `JobService`, `Worker`, `BroadcastReceiver`, or `ContentProvider`, directly or through a project base | 4 |
 | Queue consumer | `.consume(` only when the receiver or the line names a queue, plus `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
 | Cron / scheduled | `cron.schedule`, `setInterval`, `@scheduled`, `schedule.every` | 4 |
 | CLI command | `package.json` `bin`, `#!/usr/bin/env node`, `if __name__ == "__main__"`, argparse/click/typer, `public static void main(`, `fun main(` | 3 |
-| Android application | a class extending `Application` | 3 |
+| Android application | a class extending `Application`, directly or through a project base | 3 |
 | Public API | an `export` or `__all__` in `index.{ts,js}`, `index.tsx`, or `__init__.py` | 3 |
 
 A file that is several things gets the best seed. Each import hop costs one level, down to a floor of 2.
@@ -43,9 +43,11 @@ A `@RequestMapping` with no `method=` is seeded as `ANY <path>`; a JAX-RS detail
 
 The framework instantiates Activities, Services, receivers, providers, Workers, and the `Application` itself; nothing in the codebase calls them, so a file that holds one is an entrypoint by declaration. Details name the component: `ACTIVITY FeedActivity`, `SERVICE SyncService`, `WORKER UploadWorker`, `RECEIVER BootReceiver`, `PROVIDER NotesProvider`, `APPLICATION AcmeApp`. A `Worker` is labelled `WORKER`, not `SERVICE`: calling it a service would put a class on the board that does not exist. Both `extends` and `implements` are read in Java, and the Kotlin supertype list after the first top-level `:` is read, so a wrapped constructor header still resolves. A type that appears only in a constructor parameter or a body comment is not a base.
 
-Only these exact base names match. A project base class — `class ConversationActivity : PassphraseRequiredActivity()`, where that class extends `AppCompatActivity` — is **not** a seed, because following the base would need a cross-file type table this extractor does not build. On an app that wraps every Activity, that undercounts UI seeds; measure it before trusting the `ui` count on such a repo. A class named `Activity` in some other framework is indistinguishable and would be seeded: base names are checked, not imports.
+Only these exact base names match directly. A class that reaches one through a project base is also seeded: the extractor builds a type table from the scanned `.java` and `.kt` files (`declaration name -> file`), reads each class's supertypes, and walks the ancestor chain up to four hops. `class ConversationActivity : PassphraseRequiredActivity()`, where `PassphraseRequiredActivity` extends `BaseActivity` and that extends `AppCompatActivity`, is a `ui` seed at seed 5. The kind and seed come from the component at the end of the parsed chain; the detail still names the class that is the entrypoint (`ACTIVITY ConversationActivity`). A name declared in more than one scanned file resolves to the declaration with the fewest path segments, then the lexicographically first path.
 
-Measured on Signal-Android (9,982 files, 819,290 non-blank lines): 73 `ui`, 53 `background` (38 receivers, 14 services, one provider), 6 `app`. Following project base classes one to four hops finds 228 more UI classes and 16 more background classes that the exact-name rule misses — `ComposeFragment` alone accounts for 95. The seed count is a floor on that repo, not a census, and the report says so.
+An ancestor that is neither a component base nor a declaration in the scanned set is a dead branch: the class is **not** seeded. The extractor never guesses a base from its name, so a dependency class outside the repo, a generated base with no scanned source, and a typo all stay unseeded rather than inventing a root. A class named `Activity` in some other framework is indistinguishable and would be seeded: base names are checked, not imports.
+
+Measured on Signal-Android (9,982 files, 819,290 non-blank lines): before following project bases the scan finds 73 `ui`, 53 `background` (38 receivers, 14 services, one provider), and 6 `app`. With the four-hop chain it finds 299 `ui`, 69 `background` (46 receivers, 19 services, four providers), and 10 `app` — 246 more components, which matches the ~248 counted by hand. `ComposeFragment` alone accounts for 95 UI classes. The seed count is still a floor — a base class declared outside the scanned set, or a chain longer than four hops, stays out — and the report says so.
 
 ## Removed: plain `.subscribe(`
 
@@ -121,7 +123,7 @@ When degrading, the report must say so in one line, and every affected finding i
 | `function` | symbol name; Python uses `Class.method`, inline handlers use the route, e.g. `POST /webhooks/stripe` |
 | `lang` | `ts`, `js`, `py`, `java`, or `kotlin` |
 | `reach` | file-level, from the graph above |
-| `call_path` | entrypoint detail, then each file on the shortest import path, then the function. File-level, not symbol-level — it says which files carry the call, not which functions call which |
+| `call_path` | entrypoint detail, then each file on the best import path, then the function. File-level, not symbol-level — it says which files carry the call, not which functions call which. The path starts at the highest-seed entrypoint that reaches the file (5 before 4 before 3); among paths from that seed, the shortest wins, ties break deterministically |
 | `source` | verbatim lines, capped by `--max-lines` |
 | `surrounding` | the file's imports, client construction (`new Client(…)`, `axios.create(…)`), and middleware registration (`app.use(…)`), in file order, quoted as-is, capped at 60 lines. `surrounding_truncated` says when the cap was hit |
 | `truncated` | true when the body exceeded the cap. A finding quoting past the cut will fail `validate`, which is the intended signal |

@@ -331,24 +331,42 @@ def _package_name(directory):
     return name if isinstance(name, str) else None
 
 
-def entry_paths(files, entry_files, max_depth=3, aliases=None):
-    """Shortest import path from an entrypoint file to every reachable file.
+def entry_paths(files, entry_files, max_depth=3, aliases=None, seeds=None):
+    """Best import path from an entrypoint file to every reachable file.
 
-    File-level, matching compute_reach. Deterministic: ties break on sorted order.
+    File-level, matching compute_reach. Seeds are searched one level at a time,
+    highest first, so a file that a seed-5 UI entry and a seed-3 CLI entry both
+    reach takes the UI path. Each level is its own layered BFS, so inside one
+    seed the shortest path wins; ties break on sorted order. A lower-seed BFS
+    may cross files a higher seed already claimed, so its own depth budget is
+    not clipped by the higher path. Deterministic.
     """
     graph = build_graph(files, aliases)
-    paths = {rel: [rel] for rel in entry_files}
-    frontier = sorted(entry_files)
+    seeds = dict(seeds or {rel: 1 for rel in entry_files})
+    if not seeds:
+        return {}
+    paths = {}
+    by_seed = {}
+    for rel, seed in seeds.items():
+        by_seed.setdefault(seed, []).append(rel)
 
-    for _ in range(max_depth):
-        nxt = []
-        for source in frontier:
-            for target in sorted(graph.get(source, ())):
-                if target in paths:
-                    continue
-                paths[target] = paths[source] + [target]
-                nxt.append(target)
-        frontier = sorted(nxt)
+    for seed in sorted(by_seed, reverse=True):
+        sources = sorted(by_seed[seed])
+        local = {rel: [rel] for rel in sources}
+        frontier = sources
+        for _ in range(max_depth):
+            nxt = []
+            for source in frontier:
+                for target in sorted(graph.get(source, ())):
+                    if target in local:
+                        continue
+                    local[target] = local[source] + [target]
+                    nxt.append(target)
+            frontier = sorted(nxt)
+            if not frontier:
+                break
+        for rel, path in local.items():
+            paths.setdefault(rel, path)
 
     return paths
 
