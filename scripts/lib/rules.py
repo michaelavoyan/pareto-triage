@@ -13,6 +13,7 @@ import re
 
 JS_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 PY_EXT = {".py"}
+JVM_EXT = {".java", ".kt", ".kts"}
 
 META = {
     # rule id: (taxonomy, blast, silence, message)
@@ -52,6 +53,16 @@ META = {
                          "live Stripe key committed to source"),
     "js-dangerous-html": ("xss", 5, 1,
                           "dangerouslySetInnerHTML renders unescaped markup"),
+    "jvm-exec-injection": ("command-injection", 5, 2,
+                           "process argument built by string concatenation"),
+    "jvm-sql-injection": ("sql-injection", 5, 2,
+                          "SQL built by string concatenation carries its input into the query"),
+    "jvm-empty-catch": ("swallowed-exception", 4, 3,
+                        "catch body is empty or comments only, so the failure disappears"),
+    "jvm-weak-hash": ("weak-hash", 4, 3,
+                      "MD5 and SHA-1 are broken for collision resistance"),
+    "jvm-object-input-stream": ("unsafe-deserialization", 5, 3,
+                                "ObjectInputStream turns its input into arbitrary objects"),
     "py-secret-aws": ("hardcoded-secret", 5, 3,
                       "AWS access key committed to source"),
     "py-secret-pem": ("hardcoded-secret", 5, 3,
@@ -202,6 +213,91 @@ def _js_defects(text):
     return found
 
 
+JVM_EXEC_CALL = re.compile(
+    r"(?:\bRuntime\s*\.\s*getRuntime\s*\(\s*\)\s*\.\s*exec|\bProcessBuilder)\s*\(")
+JVM_SQL_CALL = re.compile(r"\b(?:executeQuery|executeUpdate|execute)\s*\(")
+JVM_WEAK_HASH = re.compile(r"\bMessageDigest\s*\.\s*getInstance\s*\(\s*\"(?:MD5|SHA-1)\"")
+JVM_OBJECT_INPUT = re.compile(r"\bnew\s+ObjectInputStream\s*\(")
+JVM_CATCH = re.compile(r"\bcatch\s*\([^)]*\)\s*\{")
+
+
+def _blank_noncode(text):
+    """Replace comments and string/char literals with spaces, keeping offsets.
+
+    Empty-catch detection needs braces that are code, not braces inside a
+    literal, and a comment-only body must still read as empty.
+    """
+    out = []
+    i = 0
+    while i < len(text):
+        if text[i:i + 3] == '"""':
+            end = text.find('"""', i + 3)
+            end = len(text) if end < 0 else end + 3
+            out.append("".join(c if c == "\n" else " " for c in text[i:end]))
+            i = end
+        elif text[i:i + 2] in ("//", "/*"):
+            closer = "\n" if text[i:i + 2] == "//" else "*/"
+            end = text.find(closer, i + 2)
+            end = len(text) if end < 0 else end + len(closer)
+            out.append("".join(c if c == "\n" else " " for c in text[i:end]))
+            i = end
+        elif text[i] in "\"'":
+            quote = text[i]
+            j = i + 1
+            while j < len(text) and text[j] != quote and text[j] != "\n":
+                j += 2 if text[j] == "\\" else 1
+            end = min(j + 1, len(text))
+            out.append("".join(c if c == "\n" else " " for c in text[i:end]))
+            i = end
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def _jvm_empty_catches(text):
+    """Line numbers of catch blocks whose body is whitespace or comments only."""
+    blanked = _blank_noncode(text)
+    found = []
+    for match in JVM_CATCH.finditer(blanked):
+        depth = 1
+        cursor = match.end()
+        while cursor < len(blanked) and depth:
+            if blanked[cursor] == "{":
+                depth += 1
+            elif blanked[cursor] == "}":
+                depth -= 1
+            cursor += 1
+        if depth:
+            continue  # unbalanced braces: refuse to guess, do not report
+        if blanked[match.end():cursor - 1].strip():
+            continue
+        found.append(blanked.count("\n", 0, match.start()) + 1)
+    return found
+
+
+def _jvm_defects(text):
+    lines = text.split("\n")
+    found = []
+    for number, raw in enumerate(lines, start=1):
+        stripped = raw.strip()
+        if stripped.startswith(("//", "*", "/*")):
+            continue
+        if JVM_EXEC_CALL.search(stripped) and "+" in stripped:
+            found.append(("jvm-exec-injection", number, stripped[:300]))
+        has_quote = "\"" in stripped or "'" in stripped
+        if JVM_SQL_CALL.search(stripped) and "+" in stripped and has_quote:
+            found.append(("jvm-sql-injection", number, stripped[:300]))
+        if JVM_WEAK_HASH.search(stripped):
+            found.append(("jvm-weak-hash", number, stripped[:300]))
+        if JVM_OBJECT_INPUT.search(stripped):
+            found.append(("jvm-object-input-stream", number, stripped[:300]))
+
+    for number in _jvm_empty_catches(text):
+        found.append(("jvm-empty-catch", number, lines[number - 1].strip()[:300]))
+    return found
+
+
 def detect_defects(files):
     """Return (findings, warnings). Findings are unranked: no reach/effort yet."""
     findings = []
@@ -216,6 +312,9 @@ def detect_defects(files):
             pairs = result
         elif f["ext"] in JS_EXT:
             pairs = _js_defects(f["text"])
+        elif f["ext"] in JVM_EXT:
+            # The Java/Kotlin secret patterns are the shared ones: no duplicate rule ids.
+            pairs = _jvm_defects(f["text"]) + _line_hits(f["text"], SECRET_PATTERNS)
         elif f["ext"] in SECRET_EXTS or rel.rsplit("/", 1)[-1].startswith(".env"):
             pairs = _config_defects(f["text"])
         else:

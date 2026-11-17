@@ -84,6 +84,10 @@ Thirteen categories. Nothing outside this list is a valid failure-mode finding. 
 
 ---
 
+## Defect-only taxonomies
+
+The thirteen headings above are the complete list of failure modes, and phase 2 may propose nothing outside it. A tool-proven defect may also carry a taxonomy that names the construct rather than a failure shape: `weak-hash` (`MessageDigest` with MD5 or SHA-1) is one. `swallowed-exception` is the overlap — a failure mode here, and the taxonomy of the `jvm-empty-catch` rule. The rule that proves each construct is listed in `references/defect-rules.md`.
+
 ## Rejection rules
 
 Drop the finding, do not downgrade it, when:
