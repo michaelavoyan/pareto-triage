@@ -27,7 +27,7 @@ Run in order. Each phase writes one artifact under `<repo>/out/`. A phase must r
 | 0 Gate | `python3 scripts/pareto-triage.py gate <repo>` | `out/scope.json` |
 | 0b Sites | `python3 scripts/pareto-triage.py context <repo>` | `out/context.jsonl`, `out/sample.json` |
 | 1 Detect | `python3 scripts/pareto-triage.py detect <repo>` | `out/defects.jsonl` |
-| 2 Enrich | you do this — read `references/prompts.md` | `out/failure-modes.jsonl` |
+| 2 Enrich | you do this — read `references/prompts.md` | `out/failure-modes.jsonl`, `out/judgments.jsonl` |
 | 3 Rank | `python3 scripts/pareto-triage.py rank <repo>` | `out/ranked.json` |
 | 4 Report | `python3 scripts/pareto-triage.py report <repo>` | `out/report.html`, `out/report.json` |
 | 5 Verify | `python3 scripts/pareto-triage.py verify <repo> [--scaffold]` | `out/verify.json` |
@@ -54,10 +54,11 @@ Phase 2 is the only step where you exercise judgment. Everything else is determi
 3. Every finding needs a verbatim `evidence` quote, a `file` and `line`, and a `counter_evidence` sentence explaining why it might be fine.
 4. A finding without all four is dropped, not softened.
 5. Write JSONL matching the schema in `references/prompts.md`, then run `pareto-triage validate out/failure-modes.jsonl`. Fix rejections; do not bypass them.
+6. Write `out/judgments.jsonl` as you judge: one `{"site_id": "s_001", "findings": 0}` per site you looked at, clean or not. `rank` counts a site as judged when it appears in `judgments.jsonl` or in `failure-modes.jsonl`. Without the file, a judged-and-clean site looks unjudged: coverage counts only sites with findings, `rank` warns that clean judgments are not recorded, and `--require-coverage` cannot pass.
 
 ## Coverage is part of the answer
 
-`rank` records how many candidate sites phase 2 actually judged, and the report states it in "Could not determine". Judge every site, or say which you skipped. `rank --require-coverage 0.9` refuses a run below the threshold — use it when a partial pass would be read as a clean one.
+`rank` records how many candidate sites phase 2 actually judged, and the report states it in "Could not determine". A site is judged when `out/judgments.jsonl` or `out/failure-modes.jsonl` names it, so a clean judgment counts the same as a finding. Judge every site, or say which you skipped. `rank --require-coverage 0.9` refuses a run below the threshold — use it when a partial pass would be read as a clean one.
 
 ## What you must never do
 

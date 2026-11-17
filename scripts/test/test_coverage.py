@@ -32,6 +32,15 @@ def finding_for(site, index=1):
     return record
 
 
+def judgment(site_id, findings=0):
+    return {"site_id": site_id, "findings": findings}
+
+
+def write_judgments(out, records):
+    (Path(out) / "judgments.jsonl").write_text(
+        "".join(json.dumps(record) + "\n" for record in records))
+
+
 class CoverageTests(unittest.TestCase):
     def build(self, out):
         for command in (["gate", FIXTURES / "express-app", "--min-loc", "1", "--out", out],
@@ -91,6 +100,84 @@ class CoverageTests(unittest.TestCase):
             result = run(["rank", FIXTURES / "express-app", "--out", out])
             self.assertEqual(result.returncode, 1)
             self.assertIn("not in context.jsonl", result.stderr)
+
+    def test_clean_judgments_satisfy_full_coverage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.build(out)
+            sites = self.sites(out)
+            write_judgments(out, [judgment(site["site_id"]) for site in sites])
+            result = run(["rank", FIXTURES / "express-app", "--out", out,
+                          "--require-coverage", "1.0"])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            coverage = json.loads((out / "ranked.json").read_text())["coverage"]
+            self.assertEqual(coverage["sites_judged"], len(sites))
+            self.assertEqual(coverage["sites_unjudged"], 0)
+
+    def test_judgments_and_findings_are_a_union(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.build(out)
+            sites = self.sites(out)
+            write_judgments(out, [judgment(site["site_id"]) for site in sites[1:]])
+            (out / "failure-modes.jsonl").write_text(json.dumps(finding_for(sites[0])) + "\n")
+            result = run(["rank", FIXTURES / "express-app", "--out", out,
+                          "--require-coverage", "1.0"])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            coverage = json.loads((out / "ranked.json").read_text())["coverage"]
+            self.assertEqual(coverage["sites_judged"], len(sites))
+            self.assertEqual(coverage["sites_unjudged"], 0)
+
+    def test_missing_judgments_file_warns_that_clean_sites_are_lost(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.build(out)
+            site = self.sites(out)[0]
+            (out / "failure-modes.jsonl").write_text(json.dumps(finding_for(site)) + "\n")
+            result = run(["rank", FIXTURES / "express-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("judgments.jsonl is missing", result.stderr)
+            self.assertIn("clean", result.stderr)
+
+    def test_impossible_judgment_site_ids_are_ignored_with_a_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.build(out)
+            sites = self.sites(out)
+            write_judgments(out, [judgment(sites[0]["site_id"]), judgment("s_999")])
+            result = run(["rank", FIXTURES / "express-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("s_999", result.stderr)
+            self.assertIn("ignored", result.stderr)
+            coverage = json.loads((out / "ranked.json").read_text())["coverage"]
+            self.assertEqual(coverage["sites_judged"], 1)
+
+    def test_judged_never_exceeds_total(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.build(out)
+            sites = self.sites(out)
+            records = [judgment(site["site_id"]) for site in sites]
+            records += records + [judgment("s_998"), judgment("s_999")]
+            write_judgments(out, records)
+            result = run(["rank", FIXTURES / "express-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            coverage = json.loads((out / "ranked.json").read_text())["coverage"]
+            self.assertEqual(coverage["sites_judged"], len(sites))
+            self.assertEqual(coverage["sites_unjudged"], 0)
+            self.assertLessEqual(coverage["sites_judged"], coverage["sites_total"])
+
+    def test_malformed_judgment_record_is_skipped_with_a_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.build(out)
+            site = self.sites(out)[0]
+            write_judgments(out, [judgment(site["site_id"], findings=-1)])
+            result = run(["rank", FIXTURES / "express-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("skipped", result.stderr)
+            coverage = json.loads((out / "ranked.json").read_text())["coverage"]
+            self.assertEqual(coverage["sites_judged"], 0)
 
     def test_site_and_finding_disagreement_is_refused(self):
         with tempfile.TemporaryDirectory() as tmp:

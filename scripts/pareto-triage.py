@@ -83,6 +83,34 @@ def _load_jsonl(path):
     return [record for _, record in records]
 
 
+def _judgment_ids(judgments, sites):
+    """Site ids phase 2 judged, from out/judgments.jsonl.
+
+    A judgment exists for every site phase 2 looked at, clean or not. Only ids
+    that name a site in context.jsonl count, so sites_judged cannot exceed
+    sites_total. Impossible ids and malformed records are returned for the
+    caller to warn about, never silently folded into the count.
+    """
+    judged, unknown, skipped = set(), [], []
+    for index, record in enumerate(judgments or [], start=1):
+        if not isinstance(record, dict):
+            skipped.append((index, "record is not an object"))
+            continue
+        site_id = record.get("site_id")
+        findings = record.get("findings")
+        if not isinstance(site_id, str) or not site_id.strip():
+            skipped.append((index, "site_id must be a non-empty string"))
+            continue
+        if isinstance(findings, bool) or not isinstance(findings, int) or findings < 0:
+            skipped.append((index, "findings must be a non-negative integer"))
+            continue
+        if site_id not in sites:
+            unknown.append(site_id)
+            continue
+        judged.add(site_id)
+    return judged, unknown, skipped
+
+
 def _now():
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).isoformat()
@@ -98,6 +126,7 @@ def _inputs_digest(out_dir):
     return {
         "defects": _file_digest(out_dir / "defects.jsonl"),
         "failure_modes": _file_digest(out_dir / "failure-modes.jsonl"),
+        "judgments": _file_digest(out_dir / "judgments.jsonl"),
     }
 
 
@@ -158,7 +187,8 @@ def _stale_reasons(ranked, out_dir, files):
 
     reasons = []
     if _inputs_digest(out_dir) != ranked.get("inputs_hash"):
-        reasons.append("findings changed after the ranking: defects.jsonl or failure-modes.jsonl was rewritten")
+        reasons.append("findings changed after the ranking: defects.jsonl, failure-modes.jsonl, "
+                       "or judgments.jsonl was rewritten")
     if _sources_digest(files) != ranked.get("sources_hash"):
         reasons.append("source files changed after the ranking")
     if ranked.get("tool_version") != VERSION:
@@ -175,7 +205,11 @@ def print_gate(scope):
     print("files      %s scanned, %s skipped" % (num(size["scanned_files"]), num(size["skipped_files"])))
     print("code       %s non-blank lines%s" % (num(size["loc"]), " (%s)" % langs if langs else ""))
     if size["unsupported"]:
-        print("unsupported %s" % ", ".join("%s %s" % (e["lang"], num(e["loc"])) for e in size["unsupported"]))
+        print("unsupported %s"
+              % ", ".join("%s (%s file%s, %s lines)"
+                          % (e["lang"], num(e["files"]), "" if e["files"] == 1 else "s",
+                             num(e["loc"]))
+                          for e in size["unsupported"]))
     tests = scope["tests"]
     print("tests      %s" % (tests["runner"] if tests["present"] else "none detected"))
     print("frameworks %s" % (", ".join(f["name"] for f in scope["frameworks"]) or "none detected"))
@@ -635,6 +669,7 @@ def cmd_rank(positional, flags):
     try:
         defects = _load_jsonl(out_dir / "defects.jsonl")
         failure_modes = _load_jsonl(out_dir / "failure-modes.jsonl")
+        judgments = _load_jsonl(out_dir / "judgments.jsonl")
     except ValueError:
         return 2
 
@@ -664,12 +699,24 @@ def cmd_rank(positional, flags):
                     return 1
             else:
                 coverage["sites_unknown"].append(site_id)
-        coverage["sites_judged"] = len(judged)
-        coverage["sites_unjudged"] = len(sites) - len(judged)
         if coverage["sites_unknown"]:
             print("failure-mode records cite sites that are not in context.jsonl: %s"
                   % ", ".join(sorted(set(coverage["sites_unknown"]))[:10]), file=sys.stderr)
             return 1
+
+        judged_clean, judgment_unknown, judgment_skipped = _judgment_ids(judgments, sites)
+        if judgments is None:
+            print("warning    judgments.jsonl is missing: sites judged clean in phase 2 are not "
+                  "recorded, so coverage counts only sites with a finding", file=sys.stderr)
+        for index, reason in judgment_skipped:
+            print("warning    judgments.jsonl record %d skipped: %s" % (index, reason),
+                  file=sys.stderr)
+        if judgment_unknown:
+            print("warning    judgments.jsonl cites sites that are not in context.jsonl and were "
+                  "ignored: %s" % ", ".join(sorted(set(judgment_unknown))[:10]), file=sys.stderr)
+        judged.update(judged_clean)
+        coverage["sites_judged"] = min(len(judged), len(sites))
+        coverage["sites_unjudged"] = len(sites) - coverage["sites_judged"]
 
         required = flags.get("require-coverage")
         if required not in (None, True):
@@ -683,6 +730,9 @@ def cmd_rank(positional, flags):
                       % (len(judged), len(sites), 100 * len(judged) / len(sites), 100 * threshold),
                       file=sys.stderr)
                 return 1
+    elif judgments is not None:
+        print("warning    judgments.jsonl is present but context.jsonl is missing; "
+              "judgments cannot be attributed to sites and are ignored", file=sys.stderr)
 
     trust_model = bool(flags.get("trust-model-effort"))
     supplied = [f.get("id", "?") for f in findings
@@ -795,13 +845,25 @@ def cmd_rank(positional, flags):
         could_not_determine.append(
             "failure-mode tier not run: this report covers tool-verifiable defects only. "
             "Timeouts, idempotency, swallowed errors, and boundedness were not assessed.")
+    if sites is not None and judgments is None:
+        could_not_determine.append(
+            "phase 2 wrote no judgments.jsonl: a judged-and-clean site is indistinguishable "
+            "from an unjudged one, so coverage counts only sites with a recorded finding.")
     could_not_determine.append(
         "reachability is file-level (depth 3). Dynamic dispatch, dependency injection, "
         "event buses, and monorepo path aliases are invisible.")
     if scope["languages"]["unsupported"]:
+        ignored = []
+        for entry in scope["size"]["unsupported"]:
+            if entry.get("files") is not None:
+                ignored.append("%s (%s file%s)"
+                               % (entry["lang"], num(entry["files"]),
+                                  "" if entry["files"] == 1 else "s"))
+            else:
+                ignored.append(entry["lang"])
         could_not_determine.append(
-            "ignored languages: %s (%s files). Findings there are not counted, which lowers impact."
-            % (", ".join(scope["languages"]["unsupported"]), num(scope["size"]["scanned_files"])))
+            "ignored languages: %s. Findings there are not counted, which lowers impact."
+            % ", ".join(ignored))
     if not scope["tests"]["present"]:
         could_not_determine.append(
             "no test runner detected: no fix can be verified, and effort bands assume no test work exists.")

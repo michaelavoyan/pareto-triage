@@ -97,6 +97,19 @@ Two more gates run when `context.jsonl` is present (it is, by default, next to t
 
 Coverage is not optional context. `rank` records `sites_judged` against `sites_total`, the report states it in "Could not determine", and `rank --require-coverage 0.9` refuses a run that judged too few sites. A site nobody judged is not a clean site.
 
+## Coverage ledger (`out/judgments.jsonl`)
+
+Write one record for every site you judged, clean or not. Phase 2 is not complete until this file exists.
+
+```jsonc
+{"site_id": "s_001", "findings": 0}
+{"site_id": "s_002", "findings": 2}
+```
+
+`site_id` must name a site in `context.jsonl`. `findings` is the number of failure-mode records you wrote for that site; it is an audit count, not a score. `rank` counts coverage from `judgments.jsonl` **or** `failure-modes.jsonl`, so a site with zero findings still counts as judged. Impossible site ids are ignored with a warning, and `sites_judged` can never exceed `sites_total`.
+
+If the file is missing, `rank` keeps the old behaviour — coverage counts only sites with findings — and warns that clean judgments are not recorded. Do not leave it missing and then claim a site was clean: absence of a judgment is not a clean judgment.
+
 ## Calibration
 
 Before trusting a run, sample 20 findings and check each against the source. Precision below 0.70 means the prompt or the taxonomy is wrong. Tune the prompt, not the threshold.
