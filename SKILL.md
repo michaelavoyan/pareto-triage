@@ -41,7 +41,7 @@ Phases 0, 0b, 1, 3, 4, and 5 are implemented by the scripts; phase 6 (calibratio
 
 ## What the scan covers
 
-`detect` runs 22 built-in rules that prove a construct exists at a line: eval/exec, `shell=True`, unsafe deserialization, SQL string interpolation, disabled TLS verification, committed secrets, bare except, mutable defaults, debug mode, XSS sinks. See `references/defect-rules.md`.
+`detect` runs 27 built-in rules that prove a construct exists at a line: eval/exec, `shell=True`, `Runtime.exec`/`ProcessBuilder` with concatenation, unsafe deserialization, SQL string interpolation (Java and Kotlin concatenation included), disabled TLS verification, committed secrets, bare except, empty catch, mutable defaults, debug mode, MD5/SHA-1, XSS sinks. See `references/defect-rules.md`.
 
 Everything requiring judgment — missing timeouts, swallowed errors, missing idempotency, unbounded work — is **not** covered by `detect`. If phase 2 has not run, the report says so in "Could not determine". Do not let a defects-only report read as a full audit.
 

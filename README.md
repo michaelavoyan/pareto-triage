@@ -55,11 +55,11 @@ Even a flat repo gets numbers: what 10% of the work buys, what half buys. "80% o
 
 ## How it decides
 
-22 rules catch what can be proven from a line: `eval`, shell injection, disabled TLS, committed keys, bare `except`, mutable defaults.
+27 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, empty `catch`, weak hashing, mutable defaults.
 
 The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
 
-Java and Kotlin are scanned for entrypoints and reachability. None of the 22 rules is a JVM rule yet, so `detect` finds nothing there.
+Java and Kotlin are scanned for entrypoints, reachability, and defects. Five JVM rules cover command injection (`Runtime.exec` or `ProcessBuilder` with concatenation), SQL built by concatenation, empty `catch`, `MessageDigest` with MD5 or SHA-1, and `new ObjectInputStream`. The secret rules run on `.java`, `.kt`, and `.kts` too.
 
 The maths never reaches the model. Two people running the same commands get the same ranking.
 

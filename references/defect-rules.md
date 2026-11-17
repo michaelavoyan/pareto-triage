@@ -34,13 +34,25 @@ No external scanners are required. Semgrep, CodeQL, tsc, and eslint are stronger
 | `js-secret-stripe` | hardcoded-secret | 5 | 3 | `sk_live_…` |
 | `js-dangerous-html` | xss | 5 | 1 | `dangerouslySetInnerHTML` |
 
+### Java / Kotlin (regex, comment lines skipped)
+
+| Rule | Taxonomy | Blast | Silence | Catches |
+|---|---|---|---|---|
+| `jvm-exec-injection` | command-injection | 5 | 2 | `Runtime.getRuntime().exec(` or `ProcessBuilder(` with `+` on the same line |
+| `jvm-sql-injection` | sql-injection | 5 | 2 | `executeQuery`/`executeUpdate`/`execute` with `+` and a quote on the same line |
+| `jvm-empty-catch` | swallowed-exception | 4 | 3 | a `catch (...)` block whose body is empty or comments only |
+| `jvm-weak-hash` | weak-hash | 4 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
+| `jvm-object-input-stream` | unsafe-deserialization | 5 | 3 | `new ObjectInputStream(` |
+
+The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-empty-catch` reads forward only far enough to prove the body holds nothing but whitespace or comments; an unbalanced block is skipped rather than guessed.
+
 ## Effort for a rule match
 
 A rule match is mechanical, local work with no design decision, so it uses the reduced formula in `references/rubric.md`: `1 + no_test + boundary`, clamped to 1–5. `rank` computes it; the drivers are recorded on the finding. Effort stays ordinal: the ranking needs "cheaper than", never hours.
 
 ## Evidence
 
-Evidence is the source segment of the matched node (Python) or the matched line (JS), whitespace-trimmed. It is copied, never reconstructed, so `pareto-triage validate` passes by construction and the hallucination guard stays meaningful for agent findings.
+Evidence is the source segment of the matched node (Python) or the matched source line (`js` and JVM), whitespace-trimmed. It is copied, never reconstructed, so `pareto-triage validate` passes by construction and the hallucination guard stays meaningful for agent findings.
 
 ## Precision contract
 
@@ -51,6 +63,7 @@ Known false-positive sources, accepted for v1:
 - the tool scanning its own rule tables (regex literals inside a scanner are matches)
 - test fixtures that deliberately contain vulnerable patterns
 - generated code and vendored snippets below the ignore list
+- a trailing comment on a JVM code line, or an unrelated `+` on the same line as a JVM call, because the JVM rules are line-local and skip only lines that begin with `//`, `*`, or `/*`
 
 Both are visible in the report's "could not determine" section via file counts.
 
@@ -65,7 +78,7 @@ A rule without a negative fixture is a guess.
 
 ## Secrets outside source files
 
-Secrets are matched in `.env`, YAML, JSON, Terraform, TOML, INI, `.properties`, and `.conf` as well as source, because that is where they usually are. Only the secret rules run on those files; code rules are meaningless there.
+Secrets are matched in `.env`, YAML, JSON, Terraform, TOML, INI, `.properties`, and `.conf` as well as source, because that is where they usually are. Source means `.py`, JavaScript/TypeScript, and `.java`/`.kt`/`.kts`, which reuse the same three patterns under the same rule ids. Only the secret rules run on the non-source files; code rules are meaningless there.
 
 | Rule | Where | Matches |
 |---|---|---|
