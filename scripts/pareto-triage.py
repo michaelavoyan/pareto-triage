@@ -18,6 +18,7 @@ from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
 from lib.rules import detect_defects
 from lib.imports import compute_reach, entry_paths, read_aliases, seeds_from_entrypoints
 from lib.context import extract_sites, load_sites, site_contains, MAX_SITES_DEFAULT, MAX_SOURCE_LINES
+from lib import sampling
 from lib.effort import apply_efforts
 from lib.score import (annotate, cluster_findings, shape, quadrant, coverage_curve,
                        curve_markers, pareto_point, pareto_ladder, DEFAULT_BUDGETS)
@@ -313,6 +314,15 @@ def cmd_context(positional, flags):
         print("--limit must be >= 1 and --max-lines >= 5", file=sys.stderr)
         return 2
 
+    save_candidates = flags.get("save-candidates")
+    write_population = bool(flags.get("all")) or save_candidates is not None
+    candidates_path = None
+    if write_population:
+        if save_candidates in (None, True):
+            candidates_path = out_dir / "candidates.jsonl"
+        else:
+            candidates_path = Path(str(save_candidates)).expanduser().resolve()
+
     depth = _max_depth(flags)
     if depth is None:
         return 2
@@ -348,7 +358,8 @@ def cmd_context(positional, flags):
         return before[-1] if before else candidates[0]
 
     sites, summary = extract_sites(files, reach, max_sites=max_sites, max_source_lines=max_source,
-                                   include_enclosing=bool(flags.get("include-enclosing")))
+                                   include_enclosing=bool(flags.get("include-enclosing")),
+                                   all_sites=write_population)
 
     for site in sites:
         path = paths.get(site["file"]) or [site["file"]]
@@ -360,9 +371,8 @@ def cmd_context(positional, flags):
                 deduped.append(step)
         site["call_path"] = deduped
 
-    ordered = []
-    for site in sites:
-        ordered.append({
+    def _record(site):
+        return {
             "site_id": site["site_id"],
             "file": site["file"],
             "function": site["function"],
@@ -374,22 +384,34 @@ def cmd_context(positional, flags):
             "surrounding": site["surrounding"],
             "truncated": site["truncated"],
             **({"enclosed_by": site["enclosed_by"]} if site.get("enclosed_by") else {}),
-        })
+        }
 
-    if not ordered:
+    records = [_record(site) for site in sites]
+
+    if not records:
         print("no candidate sites: no functions found in files with reach >= 2", file=sys.stderr)
         print("this phase refuses rather than write an empty context.jsonl. "
               "Check that entrypoints point at source that contains functions.", file=sys.stderr)
         return 1
 
+    selected_count = summary["emitted"]
+    context_records = records[:selected_count]
+
+    def _write_jsonl(path, rows):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows),
+                        encoding="utf-8")
+
     out_dir.mkdir(parents=True, exist_ok=True)
     target = out_dir / "context.jsonl"
-    target.write_text("".join(json.dumps(s, sort_keys=True) + "\n" for s in ordered), encoding="utf-8")
+    _write_jsonl(target, context_records)
+    if candidates_path is not None:
+        _write_jsonl(candidates_path, records)
 
     by_reach = {}
-    for site in ordered:
+    for site in context_records:
         by_reach[site["reach"]] = by_reach.get(site["reach"], 0) + 1
-    reachable_files = len({s["file"] for s in ordered})
+    reachable_files = len({s["file"] for s in context_records})
 
     print("pareto-triage %s — context" % VERSION)
     print("files      %s scanned, %s with reach >= 2, %s ignored as unreachable"
@@ -397,6 +419,9 @@ def cmd_context(positional, flags):
     print("sites      %s of %s candidates%s"
           % (num(summary["emitted"]), num(summary["candidates"]),
              " (limit %s hit)" % num(summary["limit"]) if summary["limit_hit"] else ""))
+    if candidates_path is not None:
+        print("population %s candidate sites written; first %s match context.jsonl"
+              % (num(summary["population"]), num(summary["emitted"])))
     print("reach      %s"
           % ", ".join("reach %d: %s" % (level, num(by_reach[level]))
                       for level in sorted(by_reach, reverse=True)))
@@ -411,6 +436,75 @@ def cmd_context(positional, flags):
     if summary["limit_hit"]:
         print("warning    site cap reached; %s candidates were not included"
               % num(summary["candidates"] - summary["emitted"]))
+    print("")
+    print("wrote %s" % target)
+    if candidates_path is not None:
+        print("wrote %s" % candidates_path)
+    return 0
+
+
+def cmd_sampling(positional, flags):
+    repo, out_dir = _paths(positional, flags)
+    candidates_path = out_dir / "candidates.jsonl"
+
+    try:
+        population = _load_jsonl(candidates_path)
+        defects = _load_jsonl(out_dir / "defects.jsonl")
+        failure_modes = _load_jsonl(out_dir / "failure-modes.jsonl")
+    except ValueError:
+        return 2
+
+    if population is None:
+        print("no candidates.jsonl in %s — run: pareto-triage context <repo> --all" % out_dir,
+              file=sys.stderr)
+        return 2
+    if not population:
+        print("candidates.jsonl is empty; there is no population to sample", file=sys.stderr)
+        return 2
+    if defects is None:
+        print("no defects.jsonl in %s — run: pareto-triage detect <repo>" % out_dir,
+              file=sys.stderr)
+        return 2
+
+    try:
+        limit = int(flags.get("limit", MAX_SITES_DEFAULT))
+        seed = int(flags.get("seed", sampling.DEFAULT_SEED))
+    except (TypeError, ValueError):
+        print("--limit and --seed must be integers", file=sys.stderr)
+        return 2
+    if limit < 1:
+        print("--limit must be >= 1", file=sys.stderr)
+        return 2
+
+    result = sampling.measure(population, defects, limit=limit, seed=seed)
+    result.update({
+        "tool": "pareto-triage",
+        "tool_version": VERSION,
+        "repo": str(repo),
+        "generated_at": _now(),
+        "inputs": {
+            "candidates": len(population),
+            "defects": len(defects),
+            "failure_modes_ignored": len(failure_modes or []),
+        },
+    })
+
+    target = out_dir / "sampling.json"
+    target.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+
+    def _percent(block):
+        return "%5.1f%% vs %5.1f%% (ratio %s, 95%% CI %+.3f..%+.3f)" % (
+            100 * block["selected"], 100 * block["random"],
+            "n/a" if block["ratio"] is None else "%.2f" % block["ratio"],
+            block["ci95"][0], block["ci95"][1])
+
+    print("pareto-triage %s — sampling" % VERSION)
+    print("population %s candidates, %s selected, %s random (seed %d)"
+          % (num(result["population"]), num(result["n"]), num(result["n"]), result["seed"]))
+    print("file       %s" % _percent(result["file_density"]))
+    print("line       %s" % _percent(result["line_density"]))
+    print("verdict    %s" % result["verdict"])
+    print("measure    rule findings only; phase-2 failure modes are not counted")
     print("")
     print("wrote %s" % target)
     return 0
@@ -1155,6 +1249,8 @@ usage: pareto-triage <command> [args]
 
   gate <repo> [--min-loc N] [--out DIR]   phase 0 — scope, refusal, entrypoints
   context <repo> [--limit N] [--max-depth N]  phase 0b — reachable candidate sites
+          [--all] [--save-candidates PATH]  also write the whole candidate population
+  sampling <repo> [--limit N] [--seed N]  compare selected sites against a random sample
   detect <repo> [--max-depth N]           phase 1 — built-in defect rules
   calibrate <repo> [--sample N] [--seed N] [--fresh]  measure phase 2 precision
   validate <findings.jsonl> [--repo P]    schema + hallucination guard for phase 2 output
@@ -1181,6 +1277,8 @@ def main(argv):
         return cmd_gate(positional, flags)
     if command == "context":
         return cmd_context(positional, flags)
+    if command == "sampling":
+        return cmd_sampling(positional, flags)
     if command == "detect":
         return cmd_detect(positional, flags)
     if command == "validate":

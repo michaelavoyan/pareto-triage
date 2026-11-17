@@ -63,6 +63,8 @@ Java and Kotlin are scanned for entrypoints, reachability, and defects. Five JVM
 
 The maths never reaches the model. Two people running the same commands get the same ranking.
 
+The selection is testable: `context --all` writes the full candidate population, and `sampling` reports whether the chosen sites carry more rule findings than a seeded random sample of the same size.
+
 ## Terminal instead
 
 ```sh
