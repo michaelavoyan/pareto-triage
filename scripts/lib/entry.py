@@ -57,9 +57,43 @@ NEXT_PAGES_PATH = re.compile(r"(^|/)pages/api/.+\.(ts|tsx|js|jsx|mjs)$")
 
 CONSUMER_RES = [
     (re.compile(r"@(?:app\.task|shared_task)\b"), "celery task"),
-    (re.compile(r"\.consume\s*\("), "consume"),
     (re.compile(r"new\s+Consumer\s*\("), "kafka consumer"),
 ]
+
+# `.consume(` alone is not a queue signal. On Signal-Android every remaining
+# consumer seed was a Compose pointer-input `consume()` in gesture code, which
+# is a no-op in the UI, not a workload boundary. It counts only when the
+# receiver names a queue or the line does: otherwise the seed is invented and
+# every reach number behind it is inflated.
+CONSUME_RE = re.compile(r"\.[ \t]*consume[ \t]*\(")
+CONSUME_RECEIVER_RE = re.compile(r"consumer|queue|subscription", re.I)
+CONSUME_LINE_RE = re.compile(r"topic|queueName|partition", re.I)
+
+# Android components are instantiated by the framework, so their files are
+# entrypoints even though nothing in the codebase calls them. Exact base names
+# only: `Activity` is Android's, but a `class Foo extends Activity` in some
+# other framework is indistinguishable here, and a wrong seed outranks a
+# missing one.
+ANDROID_COMPONENTS = {
+    "Activity": ("ui", "ACTIVITY"),
+    "AppCompatActivity": ("ui", "ACTIVITY"),
+    "ComponentActivity": ("ui", "ACTIVITY"),
+    "FragmentActivity": ("ui", "ACTIVITY"),
+    "Fragment": ("ui", "ACTIVITY"),
+    "Service": ("background", "SERVICE"),
+    "IntentService": ("background", "SERVICE"),
+    "JobService": ("background", "SERVICE"),
+    "Worker": ("background", "WORKER"),
+    "BroadcastReceiver": ("background", "RECEIVER"),
+    "ContentProvider": ("background", "PROVIDER"),
+    "Application": ("app", "APPLICATION"),
+}
+
+JVM_CLASS_RE = re.compile(
+    r"^[ \t]*(?:(?:public|protected|private|internal|abstract|open|final|sealed"
+    r"|data|static|strictfp|inline|value|inner|expect|actual)[ \t]+)*"
+    r"class[ \t]+([A-Za-z_$][\w$]*)",
+    re.M)
 
 # Rx `.subscribe(` is not a queue entrypoint: it is how an in-process stream is
 # consumed, and on Signal-Android every one of the 113 "consumers" was an
@@ -111,6 +145,98 @@ def _spring_detail(annotation, args):
 
 def _line_of(text, index):
     return text.count("\n", 0, index) + 1
+
+
+def _line_at(text, index):
+    """The whole line around `index`, used when a call's meaning is on it."""
+    start = text.rfind("\n", 0, index) + 1
+    end = text.find("\n", index)
+    return text[start:] if end < 0 else text[start:end]
+
+
+def _receiver_before(text, index):
+    """The identifier immediately left of `text[index]`, or "".
+
+    Done by hand: a regex that captures the receiver and then requires the call
+    backtracks quadratically over long chained expressions, and a 10k-file repo
+    pays for it on every line.
+    """
+    end = index
+    while end > 0 and text[end - 1] in " \t":
+        end -= 1
+    start = end
+    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_$"):
+        start -= 1
+    return text[start:end]
+
+
+def _class_header(text, start):
+    """Text after a class name up to the body, so a wrapped header still counts."""
+    end = start
+    limit = min(len(text), start + 400)
+    while end < limit:
+        if text[end] in "{;}" or text.startswith("\n\n", end):
+            break
+        end += 1
+    return text[start:end]
+
+
+def _top_level_colon(header):
+    depth = 0
+    for index, char in enumerate(header):
+        if char in "([<{":
+            depth += 1
+        elif char in ")]>}":
+            depth = max(depth - 1, 0)
+        elif char == ":" and depth == 0:
+            return index
+    return -1
+
+
+def _split_top_level(header):
+    """Split a supertype list on commas that are not inside generics or args."""
+    parts = []
+    token = ""
+    depth = 0
+    for char in header:
+        if char in "([<{":
+            depth += 1
+        elif char in ")]>}":
+            depth = max(depth - 1, 0)
+        if char == "," and depth == 0:
+            parts.append(token)
+            token = ""
+            continue
+        token += char
+    parts.append(token)
+    return parts
+
+
+def _android_supertypes(header, kotlin):
+    """Base type names named in a class header. Java: extends/implements.
+
+    Kotlin has no keyword, so the list after the first top-level `:` is the
+    supertypes — constructor parameters are inside brackets, which the depth
+    count skips.
+    """
+    if kotlin:
+        index = _top_level_colon(header)
+        if index < 0:
+            return []
+        expressions = _split_top_level(header[index + 1:])
+    else:
+        expressions = []
+        for chunk in re.split(r"\b(?:extends|implements)\b", header)[1:]:
+            expressions.extend(_split_top_level(chunk))
+
+    names = []
+    for expression in expressions:
+        # `Fragment<Foo>` and `IntentService("x")` name Fragment and IntentService.
+        name = re.split(r"[<(]", expression.strip(), 1)[0]
+        name = name.split(".")[-1].strip()
+        if name:
+            names.append(name)
+    return names
 
 
 def _collect(pattern, text, rel, make):
@@ -245,10 +371,28 @@ def extract_entrypoints(files):
                 found.append({"kind": "http", "framework": "jaxrs", "file": rel,
                               "line": _line_of(text, match.start()),
                               "detail": match.group(1)})
+            kotlin = ext in (".kt", ".kts")
+            for match in JVM_CLASS_RE.finditer(text):
+                header = _class_header(text, match.end())
+                for base in _android_supertypes(header, kotlin):
+                    component = ANDROID_COMPONENTS.get(base)
+                    if component is None:
+                        continue
+                    kind, label = component
+                    found.append({"kind": kind, "framework": "android", "file": rel,
+                                  "line": _line_of(text, match.start(1)),
+                                  "detail": "%s %s" % (label, match.group(1))})
+                    break
 
         for pattern, label in CONSUMER_RES:
             for hit in _collect(pattern, text, rel, lambda m, l=label: {"kind": "consumer", "detail": l}):
                 found.append(hit)
+        for match in CONSUME_RE.finditer(text):
+            if not (CONSUME_RECEIVER_RE.search(_receiver_before(text, match.start()))
+                    or CONSUME_LINE_RE.search(_line_at(text, match.start()))):
+                continue
+            found.append({"kind": "consumer", "file": rel,
+                          "line": _line_of(text, match.start()), "detail": "consume"})
         if RX_WORKER_PATH_RE.search(rel):
             for line_no, line in enumerate(text.splitlines(), start=1):
                 if RX_SUBSCRIBE_RE.search(line) and RX_IO_RE.search(line):
@@ -272,7 +416,8 @@ def extract_entrypoints(files):
 
 def entrypoint_counts(entrypoints):
     counts = {"http": 0, "cli": 0, "cron": 0, "consumer": 0,
-              "middleware": 0, "public-api": 0}
+              "middleware": 0, "public-api": 0,
+              "ui": 0, "background": 0, "app": 0}
     for e in entrypoints:
         if e["kind"] in counts:
             counts[e["kind"]] += 1

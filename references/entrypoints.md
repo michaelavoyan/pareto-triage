@@ -7,10 +7,13 @@
 | Kind | How it is found | seed |
 |---|---|---|
 | HTTP route | framework-specific patterns below, including Django `include(`, Spring `@GetMapping`, JAX-RS `@GET` | 5 |
+| Android UI | a class extending `Activity`, `AppCompatActivity`, `ComponentActivity`, `FragmentActivity`, or `Fragment` | 5 |
 | Middleware | `app.use('<path>', …)` — on the request path, not a route | 4 |
-| Queue consumer | `.consume(`, `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
+| Android background | a class extending `Service`, `IntentService`, `JobService`, `Worker`, `BroadcastReceiver`, or `ContentProvider` | 4 |
+| Queue consumer | `.consume(` only when the receiver or the line names a queue, plus `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
 | Cron / scheduled | `cron.schedule`, `setInterval`, `@scheduled`, `schedule.every` | 4 |
 | CLI command | `package.json` `bin`, `#!/usr/bin/env node`, `if __name__ == "__main__"`, argparse/click/typer, `public static void main(`, `fun main(` | 3 |
+| Android application | a class extending `Application` | 3 |
 | Public API | an `export` or `__all__` in `index.{ts,js}`, `index.tsx`, or `__init__.py` | 3 |
 
 A file that is several things gets the best seed. Each import hop costs one level, down to a floor of 2.
@@ -26,19 +29,40 @@ Flask        @app.route  ·  @bp.route  ·  Blueprint.add_url_rule
 Django       urls.py entries: path( · re_path( · include(
 Spring       @GetMapping · @PostMapping · @RequestMapping (verb from method=) · @Put/@Delete/@PatchMapping
 JAX-RS       @GET · @POST — the path lives in a separate @Path and is not joined
+Android      Java `extends` / Kotlin `:` against a component base name:
+             Activity · AppCompatActivity · ComponentActivity · FragmentActivity · Fragment
+             Service · IntentService · JobService · Worker · BroadcastReceiver · ContentProvider
+             Application
 ```
 
 Adding a framework is one regex family plus one fixture. Do not add a framework without a fixture that proves the extraction works.
 
 A `@RequestMapping` with no `method=` is seeded as `ANY <path>`; a JAX-RS detail carries the verb and no path, because guessing the class-level `@Path` would be invention. Annotations in comments are not special-cased.
 
+### Android components
+
+The framework instantiates Activities, Services, receivers, providers, Workers, and the `Application` itself; nothing in the codebase calls them, so a file that holds one is an entrypoint by declaration. Details name the component: `ACTIVITY FeedActivity`, `SERVICE SyncService`, `WORKER UploadWorker`, `RECEIVER BootReceiver`, `PROVIDER NotesProvider`, `APPLICATION AcmeApp`. A `Worker` is labelled `WORKER`, not `SERVICE`: calling it a service would put a class on the board that does not exist. Both `extends` and `implements` are read in Java, and the Kotlin supertype list after the first top-level `:` is read, so a wrapped constructor header still resolves. A type that appears only in a constructor parameter or a body comment is not a base.
+
+Only these exact base names match. A project base class — `class ConversationActivity : PassphraseRequiredActivity()`, where that class extends `AppCompatActivity` — is **not** a seed, because following the base would need a cross-file type table this extractor does not build. On an app that wraps every Activity, that undercounts UI seeds; measure it before trusting the `ui` count on such a repo. A class named `Activity` in some other framework is indistinguishable and would be seeded: base names are checked, not imports.
+
+Measured on Signal-Android (9,982 files, 819,290 non-blank lines): 73 `ui`, 53 `background` (38 receivers, 14 services, one provider), 6 `app`. Following project base classes one to four hops finds 228 more UI classes and 16 more background classes that the exact-name rule misses — `ComposeFragment` alone accounts for 95. The seed count is a floor on that repo, not a census, and the report says so.
+
 ## Removed: plain `.subscribe(`
 
 `.subscribe(` used to be a consumer entrypoint. On Signal-Android it produced 86 of the 113 “consumer” seeds, and all 86 were internal RxJava subscriptions inside the app — UI streams, database observers, in-process buses. None of them is a queue. Every reach number behind those seeds was resting on a false entrypoint.
 
-The pattern is removed. `.consume(`, `new Consumer(`, `@app.task`, and `@shared_task` remain.
+The pattern is removed. `new Consumer(`, `@app.task`, and `@shared_task` remain.
 
-`.consume(` is still a coarse signal: on Signal-Android the other 27 consumer seeds were Compose pointer `consume()` calls in gesture code, not queue consumers. That pattern is kept because it is the documented queue signal, but those 27 seeds are also false. Narrowing `consume(` is a separate change; until then, treat the remaining consumer count on an Android repo with suspicion.
+## Narrowed: `.consume(`
+
+`.consume(` alone is not a queue signal. On Signal-Android the other 27 consumer seeds were Compose pointer `consume()` calls in gesture code, which clear a pointer event and do no work. The call counts only when one of these is true:
+
+1. the receiver identifier matches `consumer`, `queue`, or `subscription` (case-insensitive) — `kafkaConsumer.consume(`, `queue.consume(`;
+2. the line contains `topic`, `queueName`, or `partition`.
+
+`it.consume()` in a gesture handler, and `channel.consume('jobs', handle)` with a bare receiver, are not seeds. The cost is real: AMQP code that consumes through a `channel`, or through a plain `basicConsume` call, loses its seed unless the line names the topic or queue. That is the price of dropping 27 false seeds on Android, and it belongs in the report as a known miss rather than a clean result.
+
+Measured on Signal-Android: the 27 consumer seeds drop to 0. Fifteen files call `.consume(` there, and none names a topic, `queueName`, or partition on the line. `new Consumer(`, `@app.task`, and `@shared_task` do not occur, so the consumer kind disappears from that repo's counts.
 
 A narrow Rx replacement exists because an Rx subscription to I/O can be a real workload boundary. It counts only when both are true:
 
@@ -50,9 +74,9 @@ Anything less specific is not a seed. A false seed is worse than a missing one: 
 ## Call graph and reach
 
 ```
-reach = 5  the file registers a route (or is reachable by an include)
-reach = 4  middleware, cron, or consumer entrypoint
-reach = 3  CLI entrypoint or package export
+reach = 5  the file registers a route, is an Android UI component, or is included
+reach = 4  middleware, cron, consumer, or Android background component
+reach = 3  CLI entrypoint, package export, or Android Application subclass
 reach = 2  imported within depth 3 of any seed, floor
 reach = 1  present in the repo, no path from any entrypoint
 reach = 0  in the repo but unreadable (binary, oversized, non-utf-8)
