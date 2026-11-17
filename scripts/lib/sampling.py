@@ -1,9 +1,11 @@
-"""Does the site ordering beat a random sample? Mechanics only.
+"""Does the ranked site ordering beat a random sample? Mechanics only.
 
-`context` claims that reach, inbound edges, body size, and path find the sites
-worth judging. That claim is falsifiable without a model: take the selected
-sites, take a seeded random sample of the same size from the same population,
-and compare how often each contains a built-in rule finding.
+`context --sample-order ranked` picks sites by reach, inbound edges, body
+size, and path. Nothing here assumes that order finds the sites worth judging:
+take the selected sites, take a seeded random sample of the same size from the
+same population, and compare how often each contains a built-in rule finding.
+On Signal-Android at 5,000 sites per arm the two were indistinguishable, which
+is why a random sample is now the default.
 
 This module measures containment only. It does not judge severity, impact, or
 whether a site is worth fixing, and it never counts a phase-2 failure mode:
