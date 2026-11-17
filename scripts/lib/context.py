@@ -28,6 +28,8 @@ LANG_BY_EXT = {
 }
 
 MAX_SITES_DEFAULT = 400
+MAX_SITES_PER_FILE = 20
+ACCESSOR_RE = re.compile(r"^(get|set|is|has)[A-Z]")
 MAX_SOURCE_LINES = 300
 
 JS_KEYWORDS = {
@@ -491,6 +493,50 @@ def _surrounding(text, start_line, limit=SURROUNDING_LIMIT):
     return "\n".join(unique[:limit]), truncated
 
 
+def is_trivial_accessor(site):
+    """A setter, getter, or assignment-only body is not worth judging."""
+    body = [line.strip() for line in site["source"].split("\n") if line.strip()]
+    if len(body) > 3:
+        return False
+    if site["function"] == site["file"].rsplit("/", 1)[-1].split(".")[0]:
+        return False  # a constructor named after its class is not an accessor
+    if ACCESSOR_RE.match(site["function"]):
+        return True
+    inner = body[1:-1]
+    return bool(inner) and all(
+        re.match(r"^(this\.)?[\w.]+\s*=\s*[^;]+;?$", line) for line in inner)
+
+
+def _body_lines(site):
+    return site["lines"][1] - site["lines"][0] + 1
+
+
+def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT, per_file=MAX_SITES_PER_FILE):
+    """Pick the sites worth judging: reach, inbound edges, size, then path.
+
+    Deterministic. Path order is the last tiebreak, never the first, because
+    reach ties are the norm and path order favours one directory.
+    """
+    ordered = sorted(candidates, key=lambda site: (
+        -site["reach"],
+        -inbound.get(site["file"], 0),
+        -min(_body_lines(site), 200),
+        site["file"],
+        site["lines"][0],
+        site["function"],
+    ))
+    selected = []
+    per_file_count = {}
+    for site in ordered:
+        if per_file_count.get(site["file"], 0) >= per_file:
+            continue
+        per_file_count[site["file"]] = per_file_count.get(site["file"], 0) + 1
+        selected.append(site)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
 def extract_sites_collapse(candidates, include_enclosing=False):
     return candidates if include_enclosing else _collapse_nested(candidates)
 
@@ -587,9 +633,14 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
             })
 
     collapsed = extract_sites_collapse(candidates, include_enclosing)
-    collapsed.sort(key=lambda s: (-s["reach"], s["file"], s["lines"][0], s["function"]))
-    total = len(collapsed)
-    limited = collapsed[:max_sites]
+    trivial = [site for site in collapsed if is_trivial_accessor(site)]
+    judged = [site for site in collapsed if not is_trivial_accessor(site)]
+
+    from .imports import inbound_counts
+    inbound = inbound_counts(files)
+    total = len(judged)
+    per_file = max(3, min(MAX_SITES_PER_FILE, max_sites // 5))
+    limited = select_sites(judged, inbound, limit=max_sites, per_file=per_file)
 
     sites = []
     for index, site in enumerate(limited, start=1):
@@ -601,9 +652,11 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
         "candidates": total,
         "emitted": len(sites),
         "limit": max_sites,
+        "per_file": per_file,
         "limit_hit": total > max_sites,
         "parse_errors": parse_errors,
         "unreachable_source_files": unreachable_files,
+        "trivial_excluded": len(trivial),
         "test_files_excluded": test_files,
     }
     return sites, summary
