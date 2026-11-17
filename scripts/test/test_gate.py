@@ -60,6 +60,18 @@ class GateTests(unittest.TestCase):
             self.assertIn("Do not improvise a report", result.stdout)
 
 
+class UnsupportedLanguageTests(unittest.TestCase):
+    def test_scope_counts_files_per_unsupported_language(self):
+        with tempfile.TemporaryDirectory() as out:
+            result = run(["gate", FIXTURES / "mixed-lang", "--min-loc", "1", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            scope = json.loads((Path(out) / "scope.json").read_text())
+            counts = {entry["lang"]: entry["files"] for entry in scope["size"]["unsupported"]}
+            self.assertEqual(counts, {"cpp": 2, "c": 2})
+            self.assertEqual(scope["languages"]["unsupported"], ["cpp", "c"])
+            self.assertIn("cpp (2 files", result.stdout)
+
+
 class ValidateTests(unittest.TestCase):
     def test_accepts_well_formed_finding(self):
         result = run([

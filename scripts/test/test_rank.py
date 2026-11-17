@@ -111,6 +111,20 @@ class RankPipelineTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2)
             self.assertIn("run: pareto-triage detect", result.stderr)
 
+    def test_ignored_language_line_counts_files_not_scanned_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            run(["gate", FIXTURES / "mixed-lang", "--min-loc", "1", "--out", out])
+            run(["detect", FIXTURES / "mixed-lang", "--out", out])
+            result = run(["rank", FIXTURES / "mixed-lang", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            ranked = json.loads((out / "ranked.json").read_text())
+            ignored = next(line for line in ranked["could_not_determine"]
+                           if line.startswith("ignored languages:"))
+            self.assertIn("cpp (2 files)", ignored)
+            self.assertIn("c (2 files)", ignored)
+            self.assertNotIn("6 files", ignored)
+
     def test_report_renders_offline_html(self):
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp)

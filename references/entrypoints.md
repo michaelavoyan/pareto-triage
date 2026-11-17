@@ -8,7 +8,7 @@
 |---|---|---|
 | HTTP route | framework-specific patterns below, including Django `include(`, Spring `@GetMapping`, JAX-RS `@GET` | 5 |
 | Middleware | `app.use('<path>', …)` — on the request path, not a route | 4 |
-| Queue consumer | `consumer.subscribe`, `@app.task`, `@shared_task`, `process(` in a worker module | 4 |
+| Queue consumer | `.consume(`, `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
 | Cron / scheduled | `cron.schedule`, `setInterval`, `@scheduled`, `schedule.every` | 4 |
 | CLI command | `package.json` `bin`, `#!/usr/bin/env node`, `if __name__ == "__main__"`, argparse/click/typer, `public static void main(`, `fun main(` | 3 |
 | Public API | an `export` or `__all__` in `index.{ts,js}`, `index.tsx`, or `__init__.py` | 3 |
@@ -31,6 +31,21 @@ JAX-RS       @GET · @POST — the path lives in a separate @Path and is not joi
 Adding a framework is one regex family plus one fixture. Do not add a framework without a fixture that proves the extraction works.
 
 A `@RequestMapping` with no `method=` is seeded as `ANY <path>`; a JAX-RS detail carries the verb and no path, because guessing the class-level `@Path` would be invention. Annotations in comments are not special-cased.
+
+## Removed: plain `.subscribe(`
+
+`.subscribe(` used to be a consumer entrypoint. On Signal-Android it produced 86 of the 113 “consumer” seeds, and all 86 were internal RxJava subscriptions inside the app — UI streams, database observers, in-process buses. None of them is a queue. Every reach number behind those seeds was resting on a false entrypoint.
+
+The pattern is removed. `.consume(`, `new Consumer(`, `@app.task`, and `@shared_task` remain.
+
+`.consume(` is still a coarse signal: on Signal-Android the other 27 consumer seeds were Compose pointer `consume()` calls in gesture code, not queue consumers. That pattern is kept because it is the documented queue signal, but those 27 seeds are also false. Narrowing `consume(` is a separate change; until then, treat the remaining consumer count on an Android repo with suspicion.
+
+A narrow Rx replacement exists because an Rx subscription to I/O can be a real workload boundary. It counts only when both are true:
+
+1. the file path contains `worker` or `service` (case-insensitive), and
+2. the line with `subscribe(` also contains `Schedulers.io`.
+
+Anything less specific is not a seed. A false seed is worse than a missing one: it lifts every finding the call graph reaches, and the report has no way to discount a reach that was invented at the root. If in doubt, leave it out and say so under “Could not determine”.
 
 ## Call graph and reach
 

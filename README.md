@@ -72,12 +72,31 @@ S=~/Development/pareto-triage/scripts/pareto-triage.py
 R=/path/to/repo
 
 python3 $S gate $R && python3 $S context $R && python3 $S detect $R
-# your agent writes $R/out/failure-modes.jsonl
+# your agent writes $R/out/failure-modes.jsonl and $R/out/judgments.jsonl
 python3 $S validate $R/out/failure-modes.jsonl --repo $R
 python3 $S rank $R && python3 $S report $R
 ```
 
 `pareto-triage help` lists the rest, including `verify --fix`, which proves a patch turns a failing probe green.
+
+## Artifacts
+
+Everything lands in `<repo>/out/`. Nothing is uploaded.
+
+| Artifact | Written by | Contains | Exposure |
+|---|---|---|---|
+| `scope.json` | `gate` | file and language counts, entrypoint list, warnings | Safe to share; no source |
+| `context.jsonl`, `candidates.jsonl` | `context` | function bodies and surrounding lines | Local only; contains source |
+| `sample.json` | `context` | sampling mode, seed, population, cap | Safe to share |
+| `defects.jsonl` | `detect` | rule findings with verbatim evidence, secrets unmasked | Local only; never commit |
+| `failure-modes.jsonl` | phase 2 | judged findings with evidence quotes | Local only; contains source |
+| `judgments.jsonl` | phase 2 | one `site_id` and finding count per judged site | Safe to share; no source, only ids and counts |
+| `ranked.json` | `rank` | scores, clusters, coverage, finding evidence | Local only; evidence is not redacted until `report` |
+| `report.html`, `report.json` | `report` | the board and its JSON, secrets redacted | Safe to share |
+| `verify.json` | `verify` | probe results and evidence | Local only; contains source |
+| `calibration.jsonl`, `calibration.json` | `calibrate` | sampled findings and verdicts | Local only; contains evidence |
+
+`judgments.jsonl` is the coverage ledger. Phase 2 writes one record per site it judged, including sites with zero findings, so `rank` can tell “judged clean” from “not judged”. Without it, coverage counts only sites with a finding; `rank` warns and `--require-coverage` cannot pass on a clean repo.
 
 ## Honest limits
 
