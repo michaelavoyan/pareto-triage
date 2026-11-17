@@ -334,6 +334,14 @@ def render(ranked, scope):
                    "A site that was never judged is not a site that was found clean.</p></div>"
                    % (coverage.get("sites_judged") or 0, coverage["sites_total"],
                       coverage.get("sites_unjudged") or 0))
+    sample = ranked.get("sample") or {}
+    if sample.get("mode"):
+        out.append("<div class=\"note\"><p>Candidate sites were sampled: <strong>%s</strong>, "
+                   "seed %s — %s of %s candidates kept, at most %s per file. "
+                   "Rule findings cover every file; this is a sample only for judgment.</p></div>"
+                   % (_e(sample.get("mode")), _e(str(sample.get("seed", 0))),
+                      _e(str(sample.get("kept", 0))), _e(str(sample.get("population", 0))),
+                      _e(str(sample.get("per_file", 0)))))
     unproven = ranked.get("unproven") or []
     if unproven:
         out.append("<h3>Unproven — supplied, could not be scored</h3>")
