@@ -405,6 +405,9 @@ def cmd_context(positional, flags):
         print("warning    %s: cannot parse (%s)" % (error["file"], error["reason"]))
     if len(summary["parse_errors"]) > 10:
         print("warning    … %d more unparseable files" % (len(summary["parse_errors"]) - 10))
+    print("selection  reach → inbound edges → body size, max %d per file; "
+          "%s trivial accessor(s) skipped"
+          % (summary["per_file"], num(summary["trivial_excluded"])))
     if summary["limit_hit"]:
         print("warning    site cap reached; %s candidates were not included"
               % num(summary["candidates"] - summary["emitted"]))

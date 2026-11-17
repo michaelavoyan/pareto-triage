@@ -361,6 +361,16 @@ def seeds_from_entrypoints(entrypoints):
     return seeds
 
 
+def inbound_counts(files, aliases=None):
+    """How many files import each file. Selection input, not scoring."""
+    graph = build_graph(files, aliases)
+    counts = {}
+    for targets in graph.values():
+        for target in targets:
+            counts[target] = counts.get(target, 0) + 1
+    return counts
+
+
 def compute_reach(files, entry_files, max_depth=3, seeds=None, skipped=None, aliases=None):
     """Return (reach_for_file, meta)."""
     if seeds is None:
