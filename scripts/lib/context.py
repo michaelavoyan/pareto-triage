@@ -9,9 +9,17 @@ Kotlin use brace matching over regex-found headers. All of it is approximate by
 design and documented in references/entrypoints.md. A site whose bounds are
 wrong produces evidence that fails `pareto-triage validate`, which is a visible
 failure rather than a silent one.
+
+There are two ways to fill the cap. `random` shuffles the candidate population
+with a seed and then applies the per-file cap; `ranked` keeps the old reach →
+inbound → body size → path order. Random is the default because the ranked
+order was measured against a seeded random sample on Signal-Android and came
+out indistinguishable from it (see references/entrypoints.md). The ordering is
+still available, but a reader must ask for it.
 """
 
 import ast
+import random
 import re
 
 from .walk import is_test_path
@@ -29,6 +37,9 @@ LANG_BY_EXT = {
 
 MAX_SITES_DEFAULT = 400
 MAX_SITES_PER_FILE = 20
+SAMPLE_ORDERS = ("random", "ranked")
+DEFAULT_SAMPLE_ORDER = "random"
+DEFAULT_SEED = 0
 ACCESSOR_RE = re.compile(r"^(get|set|is|has)[A-Z]")
 MAX_SOURCE_LINES = 300
 
@@ -512,10 +523,11 @@ def _body_lines(site):
 
 
 def _ordered_sites(candidates, inbound):
-    """The selection order: reach, inbound edges, body size, then path.
+    """The ranked selection order: reach, inbound edges, body size, then path.
 
     Deterministic. Path order is the last tiebreak, never the first, because
-    reach ties are the norm and path order favours one directory.
+    reach ties are the norm and path order favours one directory. This order is
+    what `--sample-order ranked` asks for; it is not the default.
     """
     return sorted(candidates, key=lambda site: (
         -site["reach"],
@@ -525,6 +537,21 @@ def _ordered_sites(candidates, inbound):
         site["lines"][0],
         site["function"],
     ))
+
+
+def _permutation(size, seed):
+    """A seeded Fisher-Yates permutation of range(size).
+
+    `randrange` only, over a Mersenne Twister stream, so the permutation is
+    stable across Python versions and processes. Same size and seed give the
+    same permutation, which is what makes `--seed` a reproducible choice.
+    """
+    rng = random.Random(seed)
+    pool = list(range(size))
+    for position in range(size - 1, 0, -1):
+        swap = rng.randrange(position + 1)
+        pool[position], pool[swap] = pool[swap], pool[position]
+    return pool
 
 
 def _select_indexed(ordered, limit, per_file):
@@ -543,26 +570,45 @@ def _select_indexed(ordered, limit, per_file):
     return selected, indexes
 
 
-def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT, per_file=MAX_SITES_PER_FILE):
-    """Pick the sites worth judging. See `_ordered_sites` for the ordering."""
-    ordered = _ordered_sites(candidates, inbound)
-    selected, _ = _select_indexed(ordered, limit, per_file)
+def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT,
+                 per_file=MAX_SITES_PER_FILE, order=DEFAULT_SAMPLE_ORDER,
+                 seed=DEFAULT_SEED):
+    """Pick the sites worth judging. See `select_sites_with_remainder`."""
+    selected, _ = select_sites_with_remainder(
+        candidates, inbound, limit=limit, per_file=per_file, order=order, seed=seed)
     return selected
 
 
 def select_sites_with_remainder(candidates, inbound, limit=MAX_SITES_DEFAULT,
-                                per_file=MAX_SITES_PER_FILE):
+                                per_file=MAX_SITES_PER_FILE,
+                                order=DEFAULT_SAMPLE_ORDER, seed=DEFAULT_SEED):
     """Return (selected, population) where the population starts with `selected`.
 
-    The ordering is the contract for `out/candidates.jsonl`: the first
+    `random` shuffles the ranked candidate list with `seed`, then applies the
+    per-file cap and the limit. `ranked` walks the old order. Either way the
+    walk that fills the cap is a single pass, so the per-file cap holds.
+
+    The order is the contract for `out/candidates.jsonl`: the first
     `len(selected)` records are exactly what `context.jsonl` would emit, and
-    every remaining candidate follows in the same deterministic order. A
-    random-sample comparison can then take a prefix without re-deriving the
-    per-file cap.
+    every remaining candidate follows in the ranked order. A random-sample
+    comparison can then take a prefix without re-deriving the per-file cap.
     """
-    ordered = _ordered_sites(candidates, inbound)
+    ranked = _ordered_sites(candidates, inbound)
+    if order == "random":
+        permutation = _permutation(len(ranked), seed)
+        ordered = [ranked[index] for index in permutation]
+    elif order == "ranked":
+        permutation = None
+        ordered = ranked
+    else:
+        raise ValueError("unknown sample order: %r" % (order,))
+
     selected, indexes = _select_indexed(ordered, limit, per_file)
-    remainder = [site for index, site in enumerate(ordered) if index not in indexes]
+    if permutation is None:
+        taken = set(indexes)
+    else:
+        taken = {permutation[index] for index in indexes}
+    remainder = [site for index, site in enumerate(ranked) if index not in taken]
     return selected, selected + remainder
 
 
@@ -610,7 +656,8 @@ def _collapse_nested(candidates):
 
 
 def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines=MAX_SOURCE_LINES,
-                  min_reach=2, include_enclosing=False, all_sites=False):
+                  min_reach=2, include_enclosing=False, all_sites=False,
+                  order=DEFAULT_SAMPLE_ORDER, seed=DEFAULT_SEED):
     """Return (sites, summary). Sites are ordered deterministically.
 
     With `all_sites`, the returned list is the whole population with the
@@ -674,7 +721,8 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
     total = len(judged)
     per_file = max(3, min(MAX_SITES_PER_FILE, max_sites // 5))
     selected, population = select_sites_with_remainder(judged, inbound, limit=max_sites,
-                                                       per_file=per_file)
+                                                       per_file=per_file, order=order,
+                                                       seed=seed)
     chosen = population if all_sites else selected
 
     sites = []
@@ -691,6 +739,8 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
         "limit": max_sites,
         "per_file": per_file,
         "limit_hit": total > max_sites,
+        "order": order,
+        "seed": seed,
         "parse_errors": parse_errors,
         "unreachable_source_files": unreachable_files,
         "trivial_excluded": len(trivial),

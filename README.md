@@ -63,7 +63,7 @@ Java and Kotlin are scanned for entrypoints, reachability, and defects. Five JVM
 
 The maths never reaches the model. Two people running the same commands get the same ranking.
 
-The selection is testable: `context --all` writes the full candidate population, and `sampling` reports whether the chosen sites carry more rule findings than a seeded random sample of the same size.
+`context` fills its cap with a seeded random sample by default; `--sample-order ranked` restores the reach → inbound → size order that measured no better than random on Signal-Android, and `sampling` re-runs that comparison against a seeded random sample of the same size.
 
 ## Terminal instead
 

@@ -58,6 +58,7 @@ Mandatory, never empty. Always include:
 
 - reachability gaps (dynamic dispatch, DI, monorepo aliases)
 - languages or files skipped, with reasons and counts
+- how phase 2's sites were chosen: when `out/sample.json` exists, its `mode` and `seed`, sites kept of the population, and the per-file cap, with the sentence that rule findings cover every file and the sample bounds judgment only. A site outside the sample was not judged, and is not clean
 - suspected-but-unprovable findings, listed without scores — the "Unproven" table: a supplied record that failed the evidence guard, cited a site that does not exist, or came from another prompt. It carries `file:line`, its taxonomy, and the reason. No impact, no effort, no priority
 - secret redactions performed and where: every masked quote, with `file:line` and the rule that masked it
 

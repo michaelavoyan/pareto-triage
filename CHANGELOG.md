@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.0
+
+- `context` fills its site cap with a seeded random sample by default
+  (`--sample-order random`, `--seed N`). The old reach → inbound → body size
+  order is kept as `--sample-order ranked`, unchanged.
+- The change follows a measurement, not a preference: on Signal-Android at
+  5,000 sites per arm the ranked order and a seeded random sample were
+  indistinguishable on rule findings (file-density ratio 0.98, 95% CI
+  −0.0057..+0.0049). `references/entrypoints.md` now records that result in
+  place of the claim that the order predicts value.
+- `context` prints the sampling method and writes `out/sample.json`
+  (`mode`, `seed`, `population`, `kept`, `per_file`). `context.jsonl` keeps its
+  record-only shape. `report` repeats the method under "Could not determine".
+- `sampling` warns when `candidates.jsonl` starts with a shuffled sample, so a
+  random population is not mistaken for the ranked comparison.
+
 ## 0.2.1
 
 - Test code is excluded from candidate sites, import edges and entrypoints:

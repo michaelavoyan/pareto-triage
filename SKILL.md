@@ -25,7 +25,7 @@ Run in order. Each phase writes one artifact under `<repo>/out/`. A phase must r
 | Phase | Command | Produces |
 |---|---|---|
 | 0 Gate | `python3 scripts/pareto-triage.py gate <repo>` | `out/scope.json` |
-| 0b Sites | `python3 scripts/pareto-triage.py context <repo>` | `out/context.jsonl` |
+| 0b Sites | `python3 scripts/pareto-triage.py context <repo>` | `out/context.jsonl`, `out/sample.json` |
 | 1 Detect | `python3 scripts/pareto-triage.py detect <repo>` | `out/defects.jsonl` |
 | 2 Enrich | you do this — read `references/prompts.md` | `out/failure-modes.jsonl` |
 | 3 Rank | `python3 scripts/pareto-triage.py rank <repo>` | `out/ranked.json` |

@@ -17,7 +17,8 @@ from lib.entry import extract_entrypoints, entrypoint_counts
 from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
 from lib.rules import detect_defects
 from lib.imports import compute_reach, entry_paths, read_aliases, seeds_from_entrypoints
-from lib.context import extract_sites, load_sites, site_contains, MAX_SITES_DEFAULT, MAX_SOURCE_LINES
+from lib.context import (extract_sites, load_sites, site_contains, MAX_SITES_DEFAULT,
+                         MAX_SOURCE_LINES, SAMPLE_ORDERS, DEFAULT_SAMPLE_ORDER, DEFAULT_SEED)
 from lib import sampling
 from lib.effort import apply_efforts
 from lib.score import (annotate, cluster_findings, shape, quadrant, coverage_curve,
@@ -314,6 +315,16 @@ def cmd_context(positional, flags):
         print("--limit must be >= 1 and --max-lines >= 5", file=sys.stderr)
         return 2
 
+    order = str(flags.get("sample-order", DEFAULT_SAMPLE_ORDER))
+    if order not in SAMPLE_ORDERS:
+        print("--sample-order must be one of: %s" % ", ".join(SAMPLE_ORDERS), file=sys.stderr)
+        return 2
+    try:
+        seed = int(flags.get("seed", DEFAULT_SEED))
+    except (TypeError, ValueError):
+        print("--seed must be an integer", file=sys.stderr)
+        return 2
+
     save_candidates = flags.get("save-candidates")
     write_population = bool(flags.get("all")) or save_candidates is not None
     candidates_path = None
@@ -359,7 +370,7 @@ def cmd_context(positional, flags):
 
     sites, summary = extract_sites(files, reach, max_sites=max_sites, max_source_lines=max_source,
                                    include_enclosing=bool(flags.get("include-enclosing")),
-                                   all_sites=write_population)
+                                   all_sites=write_population, order=order, seed=seed)
 
     for site in sites:
         path = paths.get(site["file"]) or [site["file"]]
@@ -408,6 +419,16 @@ def cmd_context(positional, flags):
     if candidates_path is not None:
         _write_jsonl(candidates_path, records)
 
+    sample_payload = {
+        "mode": order,
+        "seed": seed,
+        "population": summary["population"],
+        "kept": summary["emitted"],
+        "per_file": summary["per_file"],
+    }
+    sample_path = out_dir / "sample.json"
+    sample_path.write_text(json.dumps(sample_payload, indent=2) + "\n", encoding="utf-8")
+
     by_reach = {}
     for site in context_records:
         by_reach[site["reach"]] = by_reach.get(site["reach"], 0) + 1
@@ -416,9 +437,10 @@ def cmd_context(positional, flags):
     print("pareto-triage %s — context" % VERSION)
     print("files      %s scanned, %s with reach >= 2, %s ignored as unreachable"
           % (num(len(files)), num(reachable_files), num(summary["unreachable_source_files"])))
-    print("sites      %s of %s candidates%s"
+    print("sites      %s of %s candidates%s; %s trivial accessor(s) skipped"
           % (num(summary["emitted"]), num(summary["candidates"]),
-             " (limit %s hit)" % num(summary["limit"]) if summary["limit_hit"] else ""))
+             " (limit %s hit)" % num(summary["limit"]) if summary["limit_hit"] else "",
+             num(summary["trivial_excluded"])))
     if candidates_path is not None:
         print("population %s candidate sites written; first %s match context.jsonl"
               % (num(summary["population"]), num(summary["emitted"])))
@@ -430,9 +452,13 @@ def cmd_context(positional, flags):
         print("warning    %s: cannot parse (%s)" % (error["file"], error["reason"]))
     if len(summary["parse_errors"]) > 10:
         print("warning    … %d more unparseable files" % (len(summary["parse_errors"]) - 10))
-    print("selection  reach → inbound edges → body size, max %d per file; "
-          "%s trivial accessor(s) skipped"
-          % (summary["per_file"], num(summary["trivial_excluded"])))
+    print("sample     %s, seed %d: kept %s of %s candidates, max %d per file"
+          % (order, seed, num(summary["emitted"]), num(summary["population"]),
+             summary["per_file"]))
+    print("           rule findings cover every file; this is a sample only for judgment")
+    if order == "ranked":
+        print("selection  reach → inbound edges → body size, max %d per file"
+              % summary["per_file"])
     if summary["limit_hit"]:
         print("warning    site cap reached; %s candidates were not included"
               % num(summary["candidates"] - summary["emitted"]))
@@ -440,6 +466,7 @@ def cmd_context(positional, flags):
     print("wrote %s" % target)
     if candidates_path is not None:
         print("wrote %s" % candidates_path)
+    print("wrote %s" % sample_path)
     return 0
 
 
@@ -465,6 +492,20 @@ def cmd_sampling(positional, flags):
         print("no defects.jsonl in %s — run: pareto-triage detect <repo>" % out_dir,
               file=sys.stderr)
         return 2
+
+    sample_meta = None
+    sample_path = out_dir / "sample.json"
+    if sample_path.exists():
+        try:
+            sample_meta = json.loads(sample_path.read_text(encoding="utf-8"))
+        except ValueError:
+            print("warning    sample.json is not valid JSON; ignoring it", file=sys.stderr)
+    if sample_meta and sample_meta.get("mode") == "random":
+        print("warning    candidates.jsonl starts with a random sample (seed %s), not the "
+              "ranked set: this compares random against random." % sample_meta.get("seed", 0),
+              file=sys.stderr)
+        print("warning    for the ordering comparison re-run: pareto-triage context <repo> "
+              "--all --sample-order ranked", file=sys.stderr)
 
     try:
         limit = int(flags.get("limit", MAX_SITES_DEFAULT))
@@ -875,6 +916,13 @@ def cmd_report(positional, flags):
         except ValueError:
             print("warning    calibration.json is not valid JSON; ignoring it", file=sys.stderr)
 
+    sample_path = out_dir / "sample.json"
+    if sample_path.exists():
+        try:
+            ranked["sample"] = json.loads(sample_path.read_text(encoding="utf-8"))
+        except ValueError:
+            print("warning    sample.json is not valid JSON; ignoring it", file=sys.stderr)
+
     published = json.loads(json.dumps(ranked))
     redactions = redact_findings(published["findings"])
     published["redactions"] = redactions
@@ -1249,6 +1297,7 @@ usage: pareto-triage <command> [args]
 
   gate <repo> [--min-loc N] [--out DIR]   phase 0 — scope, refusal, entrypoints
   context <repo> [--limit N] [--max-depth N]  phase 0b — reachable candidate sites
+          [--sample-order random|ranked] [--seed N]  how the cap is filled (default random)
           [--all] [--save-candidates PATH]  also write the whole candidate population
   sampling <repo> [--limit N] [--seed N]  compare selected sites against a random sample
   detect <repo> [--max-depth N]           phase 1 — built-in defect rules

@@ -93,13 +93,30 @@ Java and Kotlin use the same brace matching. A method or `fun` site starts at th
 
 Overlapping sites are collapsed: when a function is defined inside another, only the inner one is emitted, with `enclosed_by` naming its container. Judging a handler and the closure inside it as two sites would score the same lines twice. `context --include-enclosing` keeps both for anyone who wants the old view.
 
-Default cap is 400 sites, ordered by descending reach, then path and line. The cap is reported; it is never silent. Raise it with `--limit` when a large repo needs a second pass.
+Default cap is 400 sites, filled by a seeded shuffle of the candidate population (`--sample-order random`, the default), with the per-file cap applied after the shuffle. `--seed N` (default 0) makes the draw reproducible; the same tree, seed, and limit produce the same `context.jsonl`. `--sample-order ranked` restores the reach → inbound → body size → path order. The cap is reported; it is never silent. Raise it with `--limit` when a large repo needs a second pass.
+
+Random is the default because the ranked order was measured and did not beat it — see the next section. `context` prints the method:
+
+```
+sample     random, seed 0: kept 400 of 5,412 candidates, max 20 per file
+           rule findings cover every file; this is a sample only for judgment
+```
+
+It also writes `out/sample.json` with `{mode, seed, population, kept, per_file}`. `context.jsonl` stays record-only: the sampling method lives in that sidecar, and `report` repeats it under "Could not determine".
 
 ## Is the selection better than random?
 
-The cap is a hypothesis, not a result. `context --all` writes `out/candidates.jsonl` — every candidate, not just the first 400 — so the hypothesis can be tested without a model in the loop.
+Measured on Signal-Android with 5,000 sites per arm, the ranked selection and a seeded random sample of the same size were **indistinguishable** on rule findings: `file_density` ratio 0.98, 95% CI on the difference −0.0057..+0.0049. The interval is tight around zero, so any edge on this measurement is smaller than half a percentage point of file density. That does not justify a default, and it is not proof that no ordering can help on any repo. So `random` is the default and `ranked` stays behind a flag — as the thing that was measured, not as a recommendation.
 
-The file has the same record shape as `context.jsonl`. Its order is the contract: the selected sites come first, exactly as `context.jsonl` emits them (reach, inbound edges, body size, path, with the per-file cap and `--limit` applied), and every other candidate follows in the same order. `site_id` is assigned over that whole order, so the first N records are the selected set. `--save-candidates PATH` writes the same file somewhere else.
+The comparison stays reproducible. `context --all` writes `out/candidates.jsonl` — every candidate, not just the first 400 — so any ordering can be tested without a model in the loop. Write the population with `--sample-order ranked` when the point is to re-test the ranked order: the selected set is the prefix of `candidates.jsonl`, so a population written with the default shuffle makes `sampling` compare random against random. `sampling` warns when `sample.json` says the population was shuffled.
+
+The file has the same record shape as `context.jsonl`. Its order is the contract: the selected sites come first, exactly as `context.jsonl` emitted them (in the run's sampling order, with the per-file cap and `--limit` applied), and every other candidate follows in the ranked order. `site_id` is assigned over that whole order, so the first N records are the selected set. `--save-candidates PATH` writes the same file somewhere else.
+
+### What the sample covers
+
+`detect` runs on every file. A rule finding outside the sampled sites is still emitted, scored, and ranked; the sample never narrows the mechanical pass.
+
+The sample bounds phase-2 judgment only. The model judges the functions in `context.jsonl`, so a failure mode — a missing timeout, a swallowed error — in a function outside the sample is not assessed at all. The report counts those sites as unjudged, not as clean. The sample also says nothing about severity, impact, or what to fix first; those come from the ranking, which covers findings from the whole tree.
 
 `pareto-triage sampling <repo> [--limit N] [--seed N]` reads `out/candidates.jsonl`, `out/defects.jsonl`, and `out/failure-modes.jsonl` when present. It takes the first N records — N is `--limit`, default 400, capped at the population — as the selected set, and draws a seeded random sample of the same size from the whole population. For each set it measures:
 
@@ -117,10 +134,10 @@ To falsify the ordering:
 ```sh
 S=scripts/pareto-triage.py
 python3 $S gate <repo>
-python3 $S context <repo> --all
+python3 $S context <repo> --all --sample-order ranked
 python3 $S detect <repo>
 python3 $S sampling <repo> --seed 0
 ```
 
-If the interval straddles zero, the claim that the selected sites carry more rule findings than random ones is unsupported on that repo. That is a real answer, and it belongs in the report.
+If the interval straddles zero, the claim that the selected sites carry more rule findings than random ones is unsupported on that repo. That is a real answer, and it belongs in the report. It is the answer measured on Signal-Android, and the reason `random` is the default.
 

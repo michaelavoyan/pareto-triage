@@ -5,4 +5,4 @@ produced a report. There is no separate rubric version: it duplicated this one a
 invited cosmetic bumps that invalidated comparable reports for no reason.
 """
 
-VERSION = "0.2.1"
+VERSION = "0.3.0"
