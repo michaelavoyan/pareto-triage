@@ -112,9 +112,59 @@ class ConsumerSignalTests(unittest.TestCase):
     def test_queue_signals_are_kept(self):
         celery = self.consumers("src/tasks.py", "@app.task\ndef send():\n    pass\n")
         shared = self.consumers("src/jobs.py", "@shared_task\ndef send():\n    pass\n")
-        consume = self.consumers("src/queue.py", "channel.consume('jobs', handle)\n")
+        consume = self.consumers("src/queue.py", "queue.consume('jobs', handle)\n")
         kafka = self.consumers("src/kafka.ts", "const c = new Consumer({ groupId: 'g' })\n")
         self.assertTrue(celery and shared and consume and kafka)
+
+
+class ConsumeSignalTests(unittest.TestCase):
+    """`.consume(` is a Compose no-op as often as it is a queue call.
+
+    On Signal-Android every remaining `consume()` was pointer-input consumption
+    in gesture code, so the receiver or the line has to name a queue.
+    """
+
+    def consumers(self, rel, text):
+        return [e for e in extract_entrypoints(
+            [{"rel": rel, "ext": Path(rel).suffix, "text": text}])
+                if e["kind"] == "consumer"]
+
+    def test_a_compose_pointer_consume_is_not_an_entrypoint(self):
+        self.assertEqual(
+            self.consumers("src/ui/gesture/gesture-detector.kt",
+                           "suspend fun PointerInputScope.detectTap() {\n"
+                           "  awaitEachGesture {\n"
+                           "    val change = event.changes.first()\n"
+                           "    change.consume()\n"
+                           "  }\n"
+                           "}\n"),
+            [])
+
+    def test_a_bare_receiver_without_queue_wording_is_not_an_entrypoint(self):
+        self.assertEqual(
+            self.consumers("src/messaging/channel.ts",
+                           "await channel.consume('jobs', handle)\n"),
+            [])
+
+    def test_a_consumer_receiver_is_an_entrypoint(self):
+        for rel, line in (("src/kafka.ts", "await kafkaConsumer.consume(next)\n"),
+                          ("src/worker/bus.ts", "consumer.consume(message)\n"),
+                          ("src/pubsub/events.ts", "pubSub.subscription.consume(batch)\n")):
+            found = self.consumers(rel, line)
+            self.assertEqual(len(found), 1, rel)
+            self.assertEqual(found[0]["line"], 1)
+
+    def test_a_queue_receiver_is_an_entrypoint(self):
+        self.assertEqual(len(self.consumers("src/broker.ts", "queue.consume(job)\n")), 1)
+
+    def test_queue_wording_on_the_line_is_an_entrypoint(self):
+        for line in ("await channel.consume('jobs', handle) // topic: jobs\n",
+                     "await channel.consume('jobs', handle, { queueName: 'jobs' })\n",
+                     "await channel.consume('jobs', handle, { partition: 0 })\n"):
+            self.assertEqual(len(self.consumers("src/amqp.ts", line)), 1, line)
+
+    def test_consume_in_a_comment_only_counts_when_the_line_qualifies(self):
+        self.assertEqual(self.consumers("src/ui/Gesture.kt", "// it.consume()\n"), [])
 
 
 class ReachScaleTests(unittest.TestCase):

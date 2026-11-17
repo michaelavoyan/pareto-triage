@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- `consume(` is narrowed to a queue signal. It counts only when the receiver
+  names `consumer`, `queue`, or `subscription`, or the line contains `topic`,
+  `queueName`, or `partition`. On Signal-Android all 27 remaining consumer
+  seeds were Compose pointer `consume()` calls in gesture code. The cost: an
+  AMQP `channel.consume(` with a bare receiver is no longer a seed.
 - Coverage counts judgments, not findings. Phase 2 now writes
   `out/judgments.jsonl`, one `site_id` and finding count per judged site, so a
   judged-and-clean site counts as judged. `rank` unions that file with

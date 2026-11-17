@@ -57,9 +57,17 @@ NEXT_PAGES_PATH = re.compile(r"(^|/)pages/api/.+\.(ts|tsx|js|jsx|mjs)$")
 
 CONSUMER_RES = [
     (re.compile(r"@(?:app\.task|shared_task)\b"), "celery task"),
-    (re.compile(r"\.consume\s*\("), "consume"),
     (re.compile(r"new\s+Consumer\s*\("), "kafka consumer"),
 ]
+
+# `.consume(` alone is not a queue signal. On Signal-Android every remaining
+# consumer seed was a Compose pointer-input `consume()` in gesture code, which
+# is a no-op in the UI, not a workload boundary. It counts only when the
+# receiver names a queue or the line does: otherwise the seed is invented and
+# every reach number behind it is inflated.
+CONSUME_RE = re.compile(r"\.[ \t]*consume[ \t]*\(")
+CONSUME_RECEIVER_RE = re.compile(r"consumer|queue|subscription", re.I)
+CONSUME_LINE_RE = re.compile(r"topic|queueName|partition", re.I)
 
 # Rx `.subscribe(` is not a queue entrypoint: it is how an in-process stream is
 # consumed, and on Signal-Android every one of the 113 "consumers" was an
@@ -111,6 +119,29 @@ def _spring_detail(annotation, args):
 
 def _line_of(text, index):
     return text.count("\n", 0, index) + 1
+
+
+def _line_at(text, index):
+    """The whole line around `index`, used when a call's meaning is on it."""
+    start = text.rfind("\n", 0, index) + 1
+    end = text.find("\n", index)
+    return text[start:] if end < 0 else text[start:end]
+
+
+def _receiver_before(text, index):
+    """The identifier immediately left of `text[index]`, or "".
+
+    Done by hand: a regex that captures the receiver and then requires the call
+    backtracks quadratically over long chained expressions, and a 10k-file repo
+    pays for it on every line.
+    """
+    end = index
+    while end > 0 and text[end - 1] in " \t":
+        end -= 1
+    start = end
+    while start > 0 and (text[start - 1].isalnum() or text[start - 1] in "_$"):
+        start -= 1
+    return text[start:end]
 
 
 def _collect(pattern, text, rel, make):
@@ -249,6 +280,12 @@ def extract_entrypoints(files):
         for pattern, label in CONSUMER_RES:
             for hit in _collect(pattern, text, rel, lambda m, l=label: {"kind": "consumer", "detail": l}):
                 found.append(hit)
+        for match in CONSUME_RE.finditer(text):
+            if not (CONSUME_RECEIVER_RE.search(_receiver_before(text, match.start()))
+                    or CONSUME_LINE_RE.search(_line_at(text, match.start()))):
+                continue
+            found.append({"kind": "consumer", "file": rel,
+                          "line": _line_of(text, match.start()), "detail": "consume"})
         if RX_WORKER_PATH_RE.search(rel):
             for line_no, line in enumerate(text.splitlines(), start=1):
                 if RX_SUBSCRIBE_RE.search(line) and RX_IO_RE.search(line):

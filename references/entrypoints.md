@@ -8,7 +8,7 @@
 |---|---|---|
 | HTTP route | framework-specific patterns below, including Django `include(`, Spring `@GetMapping`, JAX-RS `@GET` | 5 |
 | Middleware | `app.use('<path>', …)` — on the request path, not a route | 4 |
-| Queue consumer | `.consume(`, `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
+| Queue consumer | `.consume(` only when the receiver or the line names a queue, plus `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
 | Cron / scheduled | `cron.schedule`, `setInterval`, `@scheduled`, `schedule.every` | 4 |
 | CLI command | `package.json` `bin`, `#!/usr/bin/env node`, `if __name__ == "__main__"`, argparse/click/typer, `public static void main(`, `fun main(` | 3 |
 | Public API | an `export` or `__all__` in `index.{ts,js}`, `index.tsx`, or `__init__.py` | 3 |
@@ -36,9 +36,18 @@ A `@RequestMapping` with no `method=` is seeded as `ANY <path>`; a JAX-RS detail
 
 `.subscribe(` used to be a consumer entrypoint. On Signal-Android it produced 86 of the 113 “consumer” seeds, and all 86 were internal RxJava subscriptions inside the app — UI streams, database observers, in-process buses. None of them is a queue. Every reach number behind those seeds was resting on a false entrypoint.
 
-The pattern is removed. `.consume(`, `new Consumer(`, `@app.task`, and `@shared_task` remain.
+The pattern is removed. `new Consumer(`, `@app.task`, and `@shared_task` remain.
 
-`.consume(` is still a coarse signal: on Signal-Android the other 27 consumer seeds were Compose pointer `consume()` calls in gesture code, not queue consumers. That pattern is kept because it is the documented queue signal, but those 27 seeds are also false. Narrowing `consume(` is a separate change; until then, treat the remaining consumer count on an Android repo with suspicion.
+## Narrowed: `.consume(`
+
+`.consume(` alone is not a queue signal. On Signal-Android the other 27 consumer seeds were Compose pointer `consume()` calls in gesture code, which clear a pointer event and do no work. The call counts only when one of these is true:
+
+1. the receiver identifier matches `consumer`, `queue`, or `subscription` (case-insensitive) — `kafkaConsumer.consume(`, `queue.consume(`;
+2. the line contains `topic`, `queueName`, or `partition`.
+
+`it.consume()` in a gesture handler, and `channel.consume('jobs', handle)` with a bare receiver, are not seeds. The cost is real: AMQP code that consumes through a `channel`, or through a plain `basicConsume` call, loses its seed unless the line names the topic or queue. That is the price of dropping 27 false seeds on Android, and it belongs in the report as a known miss rather than a clean result.
+
+Measured on Signal-Android: the 27 consumer seeds drop to 0. Fifteen files call `.consume(` there, and none names a topic, `queueName`, or partition on the line. `new Consumer(`, `@app.task`, and `@shared_task` do not occur, so the consumer kind disappears from that repo's counts.
 
 A narrow Rx replacement exists because an Rx subscription to I/O can be a real workload boundary. It counts only when both are true:
 
