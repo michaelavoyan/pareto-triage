@@ -62,6 +62,61 @@ class ExtractionTests(unittest.TestCase):
         self.assertGreater(counts["middleware"], 0)
 
 
+class ConsumerSignalTests(unittest.TestCase):
+    """A false consumer seed lifts every finding behind it, so the bar is high."""
+
+    def consumers(self, rel, text):
+        return [e for e in extract_entrypoints(
+            [{"rel": rel, "ext": Path(rel).suffix, "text": text}])
+                if e["kind"] == "consumer"]
+
+    def test_plain_rx_subscribe_is_not_a_consumer(self):
+        self.assertEqual(
+            self.consumers("src/ui/FeedView.kt",
+                           "class FeedView {\n  stream.subscribe { render(it) }\n}\n"),
+            [])
+
+    def test_rx_subscribe_without_io_scheduler_is_not_a_consumer(self):
+        self.assertEqual(
+            self.consumers("src/worker/FeedWorker.kt",
+                           "class FeedWorker {\n  stream.subscribe { save(it) }\n}\n"),
+            [])
+
+    def test_rx_subscribe_on_io_in_a_worker_is_a_consumer(self):
+        found = self.consumers(
+            "src/worker/FeedWorker.kt",
+            "class FeedWorker {\n"
+            "  stream.subscribeOn(Schedulers.io).subscribe({ save(it) })\n"
+            "}\n")
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]["line"], 2)
+        self.assertEqual(found[0]["framework"], "rx")
+
+    def test_io_scheduler_on_a_different_line_does_not_count(self):
+        self.assertEqual(
+            self.consumers("src/service/FeedService.kt",
+                           "class FeedService {\n"
+                           "  val scheduler = Schedulers.io()\n"
+                           "  stream.subscribe { save(it) }\n"
+                           "}\n"),
+            [])
+
+    def test_io_scheduler_outside_a_worker_or_service_path_does_not_count(self):
+        self.assertEqual(
+            self.consumers("src/ui/FeedView.kt",
+                           "class FeedView {\n"
+                           "  stream.subscribeOn(Schedulers.io).subscribe({ render(it) })\n"
+                           "}\n"),
+            [])
+
+    def test_queue_signals_are_kept(self):
+        celery = self.consumers("src/tasks.py", "@app.task\ndef send():\n    pass\n")
+        shared = self.consumers("src/jobs.py", "@shared_task\ndef send():\n    pass\n")
+        consume = self.consumers("src/queue.py", "channel.consume('jobs', handle)\n")
+        kafka = self.consumers("src/kafka.ts", "const c = new Consumer({ groupId: 'g' })\n")
+        self.assertTrue(celery and shared and consume and kafka)
+
+
 class ReachScaleTests(unittest.TestCase):
     def files(self):
         return [

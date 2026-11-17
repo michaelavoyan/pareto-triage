@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- Coverage counts judgments, not findings. Phase 2 now writes
+  `out/judgments.jsonl`, one `site_id` and finding count per judged site, so a
+  judged-and-clean site counts as judged. `rank` unions that file with
+  `failure-modes.jsonl`, caps `sites_judged` at `sites_total`, ignores
+  impossible ids with a warning, and warns when the file is missing. README
+  documents the artifact and its exposure.
+- The unsupported-language line on the board counts files per language instead
+  of reusing `scanned_files`. On Signal-Android it said “cpp, c (9,982 files)”
+  when the scan had seen two such files.
+- Plain Rx `.subscribe(` is no longer a consumer entrypoint. On Signal-Android
+  it produced 86 of the 113 consumer seeds, all internal subscriptions, so
+  reach rested on a false root. The remaining signal requires a
+  `worker`/`service` path and `Schedulers.io` on the same line. The other 27
+  seeds were Compose `consume()` calls; `consume(` is unchanged by request and
+  is documented as a remaining false-seed source on Android.
+
 ## 0.3.0
 
 - `context` fills its site cap with a seeded random sample by default

@@ -56,11 +56,19 @@ NEXT_APP_PATH = re.compile(r"(^|/)app/.+/route\.[jt]sx?$")
 NEXT_PAGES_PATH = re.compile(r"(^|/)pages/api/.+\.(ts|tsx|js|jsx|mjs)$")
 
 CONSUMER_RES = [
-    (re.compile(r"\.subscribe\s*\("), "subscribe"),
     (re.compile(r"@(?:app\.task|shared_task)\b"), "celery task"),
     (re.compile(r"\.consume\s*\("), "consume"),
     (re.compile(r"new\s+Consumer\s*\("), "kafka consumer"),
 ]
+
+# Rx `.subscribe(` is not a queue entrypoint: it is how an in-process stream is
+# consumed, and on Signal-Android every one of the 113 "consumers" was an
+# internal subscription. Count it only when the path names a worker or service
+# and the same line schedules on Schedulers.io. A false seed is worse than a
+# missing one, so anything less specific stays out.
+RX_SUBSCRIBE_RE = re.compile(r"\.subscribe\s*\(")
+RX_WORKER_PATH_RE = re.compile(r"worker|service", re.I)
+RX_IO_RE = re.compile(r"Schedulers\.io")
 
 CRON_RES = [
     (re.compile(r"cron\.schedule\s*\("), "node-cron"),
@@ -241,6 +249,11 @@ def extract_entrypoints(files):
         for pattern, label in CONSUMER_RES:
             for hit in _collect(pattern, text, rel, lambda m, l=label: {"kind": "consumer", "detail": l}):
                 found.append(hit)
+        if RX_WORKER_PATH_RE.search(rel):
+            for line_no, line in enumerate(text.splitlines(), start=1):
+                if RX_SUBSCRIBE_RE.search(line) and RX_IO_RE.search(line):
+                    found.append({"kind": "consumer", "framework": "rx", "file": rel,
+                                  "line": line_no, "detail": "subscribe on Schedulers.io"})
         for pattern, label in CRON_RES:
             for hit in _collect(pattern, text, rel, lambda m, l=label: {"kind": "cron", "detail": l}):
                 found.append(hit)
