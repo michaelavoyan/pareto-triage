@@ -37,6 +37,28 @@ PY_IMPORT_RE = re.compile(r"^\s*import\s+([\w.]+)", re.M)
 
 JVM_EXTS = {".java", ".kt", ".kts"}
 
+# Objective-C: a header is an import target, its implementation holds the code.
+OBJC_EXTS = {".m", ".mm"}
+HEADER_EXTS = {".h"}
+OBJC_IMPORT_RE = re.compile(r"""^[ \t]*#[ \t]*import[ \t]*[<"]([^>"]+)[>"]""", re.M)
+
+# Swift has no file-level imports, so an edge needs a declared type and a target.
+SWIFT_EXTS = {".swift"}
+# `class func` and `class var` are modifiers, not type declarations: without the
+# negative lookahead a Swift file "declares" a type called `func`, which then
+# matches every file in the target and invents edges.
+SWIFT_TYPE_RE = re.compile(
+    r"^[ \t]*(?:@[A-Za-z_][\w.]*(?:\([^)]*\))?[ \t]+)*"
+    r"(?:(?:public|internal|private|fileprivate|open|final|indirect)[ \t]+)*"
+    r"(?:class|struct|enum|protocol|actor|typealias)[ \t]+"
+    r"(?!(?:func|var|let|subscript|init|deinit)\b)([A-Za-z_][A-Za-z0-9_]*)",
+    re.M)
+SWIFT_IMPORT_RE = re.compile(
+    r"^[ \t]*(?:@testable[ \t]+)?import[ \t]+"
+    r"(?:(?:class|struct|enum|protocol|actor|typealias|func|var|let)[ \t]+)?"
+    r"([A-Za-z_][A-Za-z0-9_.]*)", re.M)
+
+
 # Java: `import a.b.C;`, `import a.b.*;`, `import static a.b.C.member;`.
 JAVA_IMPORT_RE = re.compile(
     r"^[ \t]*import[ \t]+(?:(static)[ \t]+)?([\w.]+?)(\.\*)?[ \t\r]*;", re.M)
@@ -152,8 +174,12 @@ def _jvm_index(known):
     return index
 
 
-def _jvm_lookup(index, suffix):
-    """Deterministic pick when two scanned roots share a package path."""
+def _suffix_lookup(index, suffix):
+    """Deterministic pick when two scanned roots share a path.
+
+    Shared by the JVM, Kotlin, and Objective-C resolvers: shallower path first,
+    then lexicographic, so the same tree always produces the same edge.
+    """
     hits = index.get(suffix)
     if not hits:
         return None
@@ -168,7 +194,7 @@ def _resolve_java(spec, index, static=False):
         return None
     cuts = range(len(parts), 0, -1) if static else [len(parts)]
     for cut in cuts:
-        hit = _jvm_lookup(index, "/".join(parts[:cut]) + ".java")
+        hit = _suffix_lookup(index, "/".join(parts[:cut]) + ".java")
         if hit:
             return hit
     return None
@@ -190,11 +216,11 @@ def _resolve_kotlin(spec, index):
         stems.append(name.lower())
     for stem in stems:
         path = posixpath.join(directory, stem) if directory else stem
-        hit = _jvm_lookup(index, path + ".kt")
+        hit = _suffix_lookup(index, path + ".kt")
         if hit:
             return hit
     path = posixpath.join(directory, name) if directory else name
-    return _jvm_lookup(index, path + ".java")
+    return _suffix_lookup(index, path + ".java")
 
 
 def _package_peers(known):
@@ -204,6 +230,60 @@ def _package_peers(known):
         if rel.endswith(".java"):
             by_dir.setdefault(posixpath.dirname(rel), set()).add(rel)
     return by_dir
+
+
+def _objc_index(known):
+    """Every trailing path of every Objective-C source and header.
+
+    An `#import` names a path relative to a header search path, not to the
+    importing file, so `A/B.h` has to match any scanned path ending in `A/B.h`.
+    The same table answers the bare `"B.h"` case: a basename is a trailing path
+    of every file with that name, and the tiebreak picks one.
+    """
+    index = {}
+    for rel in known:
+        if posixpath.splitext(rel)[1] not in OBJC_EXTS | HEADER_EXTS:
+            continue
+        parts = rel.split("/")
+        for start in range(len(parts)):
+            index.setdefault("/".join(parts[start:]), []).append(rel)
+    return index
+
+
+def _objc_impl_of(known):
+    """`X.h` -> `X.m` (or `X.mm`): a header and its implementation are one file."""
+    impl = {}
+    for rel in sorted(known):
+        stem, ext = posixpath.splitext(rel)
+        if ext in OBJC_EXTS:
+            impl.setdefault(stem + ".h", rel)
+    return impl
+
+
+def _resolve_objc(rel, spec, index, impl_of):
+    """`#import "A/B.h"` -> the scanned path ending in `A/B.h`, then its impl."""
+    spec = spec.strip()
+    if not spec:
+        return None
+    candidates = []
+    if spec.startswith("."):
+        candidates.append(posixpath.normpath(
+            posixpath.join(posixpath.dirname(rel), spec)))
+    candidates.append(posixpath.normpath(spec))
+    for candidate in candidates:
+        if candidate.startswith("../"):
+            continue
+        hit = _suffix_lookup(index, candidate)
+        if hit:
+            return impl_of.get(hit, hit)
+    return None
+
+
+def _mentions_name(text, name):
+    """Proof of use: the bare identifier appears, not as part of a longer one."""
+    if not name:
+        return False
+    return re.search(r"(?<![\w$])%s(?![\w$])" % re.escape(name), text) is not None
 
 
 def _mentions_type(text, peer):
@@ -216,17 +296,78 @@ def _mentions_type(text, peer):
     name = posixpath.basename(peer)[: -len(".java")]
     if not name or name in ("package-info", "module-info"):
         return False
-    return re.search(r"(?<![\w$])%s(?![\w$])" % re.escape(name), text) is not None
+    return _mentions_name(text, name)
 
 
-def build_graph(files, aliases=None):
+def _strip_comments(text):
+    """Comments name no type and use no type: a commented-out `class Foo` must
+    not create an edge in either direction."""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    return re.sub(r"(?m)//.*$", "", text)
+
+
+def _swift_declarations(text):
+    """Type names a Swift file declares."""
+    return sorted({match.group(1) for match in SWIFT_TYPE_RE.finditer(_strip_comments(text))})
+
+
+def _identifiers(text):
+    return {match.group(0) for match in re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", text)}
+
+
+def _swift_edges(rel, text, peers, declared, module_files):
+    """Edges for one Swift file: same-target type mentions, then module imports.
+
+    `peers` is the set of scanned Swift files compiled into the same target.
+    Membership is the only thing that makes two files neighbours; without a
+    project file nothing is adjacent, which is why the caller reports it.
+    `declared` maps a type name to the files declaring it, `module_files` maps a
+    module name to the files of the target whose product it is.
+    """
+    edges = set()
+    mentions = 0
+    modules = 0
+    body = _strip_comments(text)
+    if peers:
+        for name in _identifiers(body):
+            for peer in declared.get(name, ()):
+                if peer != rel and peer in peers and peer not in edges:
+                    edges.add(peer)
+                    mentions += 1
+    for match in SWIFT_IMPORT_RE.finditer(body):
+        module = match.group(1).split(".")[0]
+        for peer in module_files.get(module, ()):
+            if peer != rel and peer not in edges:
+                edges.add(peer)
+                modules += 1
+    return edges, mentions, modules
+
+
+def build_graph(files, aliases=None, meta=None):
+    """Import graph over the scanned set. `meta`, when given, is filled with the
+    per-language notes `compute_reach` reports — today only the Swift one."""
     from .walk import is_test_path
 
-    sources = [f for f in files if not is_test_path(f["rel"])]
-    known = {f["rel"] for f in sources}
-    graph = {rel: set() for rel in known}
+    # Headers are import targets, not code: they hold no body to rank, so they
+    # are never graph nodes. A `.m` that imports its own header therefore adds
+    # no edge, and a header with no implementation resolves to nothing.
+    sources = [f for f in files
+               if not is_test_path(f["rel"]) and f["ext"] not in HEADER_EXTS]
+    # `known` is every scannable path, headers included: they are import targets
+    # even though they are not nodes. `nodes` is what the graph is keyed by.
+    known = {f["rel"] for f in files if not is_test_path(f["rel"])}
+    nodes = {f["rel"] for f in sources}
+    graph = {rel: set() for rel in nodes}
     jvm_index = None
     jvm_peers = None
+    objc_index = None
+    objc_impl = None
+    swift = None
+    swift_declared = None
+    swift_peers = None
+    swift_modules = None
+    swift_mention_edges = 0
+    swift_module_edges = 0
 
     for f in sources:
         rel = f["rel"]
@@ -269,6 +410,60 @@ def build_graph(files, aliases=None):
                     target = _resolve_kotlin(match.group(1), jvm_index)
                     if target and target != rel:
                         graph[rel].add(target)
+        elif f["ext"] in OBJC_EXTS:
+            if objc_index is None:
+                objc_index = _objc_index(known)
+                objc_impl = _objc_impl_of(known)
+            for match in OBJC_IMPORT_RE.finditer(text):
+                target = _resolve_objc(rel, match.group(1), objc_index, objc_impl)
+                # A header with no implementation is not a node; nothing to lift.
+                if target and target != rel and target in graph:
+                    graph[rel].add(target)
+        elif f["ext"] in SWIFT_EXTS:
+            if swift is None:
+                from . import xcode
+                swift = xcode.membership(files)
+                swift_declared = {}
+                for peer in sources:
+                    if peer["ext"] != ".swift":
+                        continue
+                    for name in _swift_declarations(peer["text"]):
+                        swift_declared.setdefault(name, []).append(peer["rel"])
+                swift_peers = {}
+                for compiled in swift["targets"].values():
+                    members = [member for member in compiled if member in known]
+                    for member in members:
+                        swift_peers.setdefault(member, set()).update(members)
+                swift_modules = {}
+                for module, targets in swift["products"].items():
+                    for target in targets:
+                        for member in swift["targets"].get(target, ()):
+                            if member in known:
+                                swift_modules.setdefault(module, []).append(member)
+            edges, mentions, modules = _swift_edges(
+                rel, text, swift_peers.get(rel, set()), swift_declared, swift_modules)
+            swift_mention_edges += mentions
+            swift_module_edges += modules
+            graph[rel].update(target for target in edges if target in graph)
+
+    if meta is not None and swift is not None:
+        mapped = len(swift_peers)
+        note = None
+        if not swift["pbxproj"]:
+            note = ("no project.pbxproj found: Swift files get no intra-target edges, "
+                    "only module imports can connect them")
+        elif not mapped:
+            note = ("project.pbxproj found but no scanned Swift file is listed in a "
+                    "target: no intra-target edges")
+        meta["swift"] = {
+            "pbxproj": swift["pbxproj"],
+            "swift_files": sum(1 for path in known if path.endswith(".swift")),
+            "mapped_files": mapped,
+            "targets": sorted(swift["targets"]),
+            "mention_edges": swift_mention_edges,
+            "module_edges": swift_module_edges,
+            "note": note,
+        }
 
     return graph
 
@@ -397,7 +592,8 @@ def compute_reach(files, entry_files, max_depth=3, seeds=None, skipped=None, ali
     if seeds is None:
         seeds = {rel: SEED_BY_KIND["http"] for rel in entry_files}
 
-    graph = build_graph(files, aliases)
+    notes = {}
+    graph = build_graph(files, aliases, meta=notes)
     best = dict(seeds)
     frontier = sorted(seeds)
 
@@ -426,4 +622,5 @@ def compute_reach(files, entry_files, max_depth=3, seeds=None, skipped=None, ali
         "resolved_edges": sum(len(v) for v in graph.values()),
         "reachable_files": len(best),
     }
+    meta.update(notes)
     return reach, meta

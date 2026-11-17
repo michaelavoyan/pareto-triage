@@ -1,0 +1,120 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A10000000000000000000001 /* AppMain.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000001 /* AppMain.swift */; };
+		A10000000000000000000002 /* Helpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000002 /* Helpers.swift */; };
+		A10000000000000000000003 /* Unused.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000003 /* Unused.swift */; };
+		A10000000000000000000004 /* ModuleImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000004 /* ModuleImporter.swift */; };
+		A20000000000000000000001 /* CoreStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000001 /* CoreStore.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		F10000000000000000000001 /* AppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppMain.swift; sourceTree = "<group>"; };
+		F10000000000000000000002 /* Helpers.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Helpers.swift; sourceTree = "<group>"; };
+		F10000000000000000000003 /* Unused.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Unused.swift; sourceTree = "<group>"; };
+		F10000000000000000000004 /* ModuleImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModuleImporter.swift; sourceTree = "<group>"; };
+		F20000000000000000000001 /* CoreStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoreStore.swift; sourceTree = "<group>"; };
+		P10000000000000000000001 /* App.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; path = App.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		P20000000000000000000001 /* Core.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = Core.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		E00000000000000000000001 = {
+			isa = PBXGroup;
+			children = (
+				E00000000000000000000002 /* App */,
+				E00000000000000000000003 /* Core */,
+			);
+			sourceTree = "<group>";
+		};
+		E00000000000000000000002 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				F10000000000000000000001 /* AppMain.swift */,
+				F10000000000000000000002 /* Helpers.swift */,
+				F10000000000000000000003 /* Unused.swift */,
+				F10000000000000000000004 /* ModuleImporter.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		E00000000000000000000003 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				F20000000000000000000001 /* CoreStore.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		T10000000000000000000001 /* App */ = {
+			isa = PBXNativeTarget;
+			buildPhases = (
+				S10000000000000000000001 /* Sources */,
+			);
+			name = App;
+			productName = App;
+			productReference = P10000000000000000000001 /* App.app */;
+			productType = "com.apple.product-type.application";
+		};
+		T20000000000000000000001 /* Core */ = {
+			isa = PBXNativeTarget;
+			buildPhases = (
+				S20000000000000000000001 /* Sources */,
+			);
+			name = Core;
+			productName = Core;
+			productReference = P20000000000000000000001 /* Core.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		R00000000000000000000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				LastSwiftUpdateCheck = 1500;
+			};
+			compatibilityVersion = "Xcode 14.0";
+			mainGroup = E00000000000000000000001;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				T10000000000000000000001 /* App */,
+				T20000000000000000000001 /* Core */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		S10000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000001 /* AppMain.swift in Sources */,
+				A10000000000000000000002 /* Helpers.swift in Sources */,
+				A10000000000000000000003 /* Unused.swift in Sources */,
+				A10000000000000000000004 /* ModuleImporter.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		S20000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A20000000000000000000001 /* CoreStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+	};
+	rootObject = R00000000000000000000001 /* Project object */;
+}
