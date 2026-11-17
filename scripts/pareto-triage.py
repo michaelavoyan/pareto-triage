@@ -12,7 +12,8 @@ import sys
 from pathlib import Path
 
 from lib.walk import walk, count_loc
-from lib.lang import languages, read_manifests, frameworks, test_runner, split_supported
+from lib.lang import (SUPPORTED_LABEL, frameworks, languages, read_manifests,
+                      split_supported, test_runner)
 from lib.entry import extract_entrypoints, entrypoint_counts
 from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
 from lib.rules import detect_defects
@@ -180,6 +181,18 @@ def _dedupe_findings(findings):
     return list(kept.values()), dropped
 
 
+def _print_swift_notes(reach_meta):
+    """Say what the Swift graph actually knows, instead of leaving it implied."""
+    swift = reach_meta.get("swift")
+    if not swift or not swift.get("swift_files"):
+        return
+    print("swift      %d file(s), %d mapped to a target, %d mention edge(s), %d module edge(s)"
+          % (swift["swift_files"], swift["mapped_files"], swift["mention_edges"],
+             swift["module_edges"]))
+    if swift.get("note"):
+        print("           %s" % swift["note"])
+
+
 def _stale_reasons(ranked, out_dir, files):
     """Why a ranked.json no longer describes the tree it sits next to."""
     if not ranked.get("sources_hash") and not ranked.get("inputs_hash"):
@@ -267,7 +280,7 @@ def cmd_gate(positional, flags):
     reasons = []
     if not supported:
         reasons.append("no source files in a language this tool supports "
-                       "(typescript, javascript, python, java, kotlin)")
+                       "(%s)" % SUPPORTED_LABEL)
     elif supported_loc < min_loc:
         reasons.append(
             "only %s non-blank lines of supported code; minimum is %s — too few findings to rank honestly"
@@ -484,6 +497,7 @@ def cmd_context(positional, flags):
           % ", ".join("reach %d: %s" % (level, num(by_reach[level]))
                       for level in sorted(by_reach, reverse=True)))
     print("mode       %s (depth %d)" % (reach_meta["mode"], reach_meta["max_depth"]))
+    _print_swift_notes(reach_meta)
     for error in summary["parse_errors"][:10]:
         print("warning    %s: cannot parse (%s)" % (error["file"], error["reason"]))
     if len(summary["parse_errors"]) > 10:
@@ -652,6 +666,7 @@ def cmd_detect(positional, flags):
               % ", ".join("reach %d: %d" % (level, by_reach[level]) for level in sorted(by_reach, reverse=True)))
     print("mode       %s (depth %d, %d resolved edges)"
           % (reach_meta["mode"], reach_meta["max_depth"], reach_meta["resolved_edges"]))
+    _print_swift_notes(reach_meta)
     for warning in warnings:
         print("warning    %s: %s" % (warning["path"], warning["reason"]))
     print("")

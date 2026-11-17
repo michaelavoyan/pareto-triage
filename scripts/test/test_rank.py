@@ -122,7 +122,7 @@ class RankPipelineTests(unittest.TestCase):
             ignored = next(line for line in ranked["could_not_determine"]
                            if line.startswith("ignored languages:"))
             self.assertIn("cpp (2 files)", ignored)
-            self.assertIn("c (2 files)", ignored)
+            self.assertIn("c (1 file)", ignored)
             self.assertNotIn("6 files", ignored)
 
     def test_report_renders_offline_html(self):

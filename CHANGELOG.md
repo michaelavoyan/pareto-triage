@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- Swift and Objective-C are languages the tool knows. `.swift` and `.m`/`.mm`
+  count as supported code; a header does not. `.h` is an import target only, so
+  it is never a graph node and never a counted line — counting it would double
+  every Objective-C size figure. `#import "A/B.h"`, `#import <A/B.h>`, and
+  `#import "B.h"` resolve against the scanned tree by trailing path, with the
+  JVM resolver's tiebreak (shallower path, then lexical), and an edge that lands
+  on a header is recorded against its `.m`/`.mm` because the pair is one
+  logical file. Headers that name a framework namespace — `<SignalServiceKit/
+  OWSReadTracking.h>` for a file at `SignalServiceKit/Messages/OWSReadTracking.h`
+  — stay unresolved: that lookup needs the framework's header map, not a
+  path suffix.
+- Swift gets reachability from `project.pbxproj`, not from imports. Target
+  membership is read from the Sources build phases and from Xcode 16
+  synchronised root groups (empty Sources phase, folder compiled wholesale,
+  membership exceptions honoured). Two Swift files are neighbours only when
+  they are in the same target *and* the importer names a type the other
+  declares; `import Foo` adds an edge to Foo's target when Foo is a product.
+  With no project file the run reports that it has no intra-target edges rather
+  than guessing. Entrypoints and defect rules for Swift and Objective-C are not
+  implemented yet, so on Signal-iOS the graph resolves 2,698 of 2,720 Swift
+  files into 8 targets and 57,924 mention edges, while the only seeds the
+  extractor finds are 39 CLI entries in the bundled Python tooling: 3,879 files
+  stay at reach 1 and `import SignalServiceKit` alone adds 1.48M edges. Seeding
+  Swift and Objective-C is the next step, and module imports need narrowing at
+  the same time.
 - `consume(` is narrowed to a queue signal. It counts only when the receiver
   names `consumer`, `queue`, or `subscription`, or the line contains `topic`,
   `queueName`, or `partition`. On Signal-Android all 27 remaining consumer
