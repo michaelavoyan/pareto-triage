@@ -94,3 +94,33 @@ Java and Kotlin use the same brace matching. A method or `fun` site starts at th
 Overlapping sites are collapsed: when a function is defined inside another, only the inner one is emitted, with `enclosed_by` naming its container. Judging a handler and the closure inside it as two sites would score the same lines twice. `context --include-enclosing` keeps both for anyone who wants the old view.
 
 Default cap is 400 sites, ordered by descending reach, then path and line. The cap is reported; it is never silent. Raise it with `--limit` when a large repo needs a second pass.
+
+## Is the selection better than random?
+
+The cap is a hypothesis, not a result. `context --all` writes `out/candidates.jsonl` — every candidate, not just the first 400 — so the hypothesis can be tested without a model in the loop.
+
+The file has the same record shape as `context.jsonl`. Its order is the contract: the selected sites come first, exactly as `context.jsonl` emits them (reach, inbound edges, body size, path, with the per-file cap and `--limit` applied), and every other candidate follows in the same order. `site_id` is assigned over that whole order, so the first N records are the selected set. `--save-candidates PATH` writes the same file somewhere else.
+
+`pareto-triage sampling <repo> [--limit N] [--seed N]` reads `out/candidates.jsonl`, `out/defects.jsonl`, and `out/failure-modes.jsonl` when present. It takes the first N records — N is `--limit`, default 400, capped at the population — as the selected set, and draws a seeded random sample of the same size from the whole population. For each set it measures:
+
+| Share | A site counts when |
+|---|---|
+| `file_density` | its file contains at least one rule finding |
+| `line_density` | a rule finding's line falls inside its `lines` range |
+
+`out/sampling.json` records the population, N, the seed, both shares for both sets, the ratio, the difference, and a 95% interval on the difference (normal approximation). It also records the site ids of both samples, so the draw can be audited. The verdict comes from `file_density`: **ordering beats random** when the interval is entirely above zero, **indistinguishable** when it straddles zero, and **ordering is worse than random** when it is entirely below. `line_density` carries its own verdict in the same file.
+
+The measurement is mechanical only. Phase-2 failure modes are loaded and counted as `failure_modes_ignored`, but never included in either density: a model judgment is not a mechanical finding. A missing finding is not proof that a site is clean — the rules only prove what they can see at a line. Read a flat result as "this ordering has not demonstrated an edge over random on rule findings", not as "no ordering can work". Re-run with several seeds before believing a small difference. Pass the same `--limit` to `context --all` and `sampling`; the prefix is only exactly `context.jsonl` when the two agree.
+
+To falsify the ordering:
+
+```sh
+S=scripts/pareto-triage.py
+python3 $S gate <repo>
+python3 $S context <repo> --all
+python3 $S detect <repo>
+python3 $S sampling <repo> --seed 0
+```
+
+If the interval straddles zero, the claim that the selected sites carry more rule findings than random ones is unsupported on that repo. That is a real answer, and it belongs in the report.
+

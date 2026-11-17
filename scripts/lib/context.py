@@ -511,13 +511,13 @@ def _body_lines(site):
     return site["lines"][1] - site["lines"][0] + 1
 
 
-def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT, per_file=MAX_SITES_PER_FILE):
-    """Pick the sites worth judging: reach, inbound edges, size, then path.
+def _ordered_sites(candidates, inbound):
+    """The selection order: reach, inbound edges, body size, then path.
 
     Deterministic. Path order is the last tiebreak, never the first, because
     reach ties are the norm and path order favours one directory.
     """
-    ordered = sorted(candidates, key=lambda site: (
+    return sorted(candidates, key=lambda site: (
         -site["reach"],
         -inbound.get(site["file"], 0),
         -min(_body_lines(site), 200),
@@ -525,16 +525,45 @@ def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT, per_file=MAX_SITE
         site["lines"][0],
         site["function"],
     ))
+
+
+def _select_indexed(ordered, limit, per_file):
+    """Return (selected, indexes) from an already ordered candidate list."""
     selected = []
+    indexes = set()
     per_file_count = {}
-    for site in ordered:
+    for index, site in enumerate(ordered):
         if per_file_count.get(site["file"], 0) >= per_file:
             continue
         per_file_count[site["file"]] = per_file_count.get(site["file"], 0) + 1
         selected.append(site)
+        indexes.add(index)
         if len(selected) >= limit:
             break
+    return selected, indexes
+
+
+def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT, per_file=MAX_SITES_PER_FILE):
+    """Pick the sites worth judging. See `_ordered_sites` for the ordering."""
+    ordered = _ordered_sites(candidates, inbound)
+    selected, _ = _select_indexed(ordered, limit, per_file)
     return selected
+
+
+def select_sites_with_remainder(candidates, inbound, limit=MAX_SITES_DEFAULT,
+                                per_file=MAX_SITES_PER_FILE):
+    """Return (selected, population) where the population starts with `selected`.
+
+    The ordering is the contract for `out/candidates.jsonl`: the first
+    `len(selected)` records are exactly what `context.jsonl` would emit, and
+    every remaining candidate follows in the same deterministic order. A
+    random-sample comparison can then take a prefix without re-deriving the
+    per-file cap.
+    """
+    ordered = _ordered_sites(candidates, inbound)
+    selected, indexes = _select_indexed(ordered, limit, per_file)
+    remainder = [site for index, site in enumerate(ordered) if index not in indexes]
+    return selected, selected + remainder
 
 
 def extract_sites_collapse(candidates, include_enclosing=False):
@@ -581,8 +610,12 @@ def _collapse_nested(candidates):
 
 
 def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines=MAX_SOURCE_LINES,
-                  min_reach=2, include_enclosing=False):
-    """Return (sites, summary). Sites are ordered deterministically."""
+                  min_reach=2, include_enclosing=False, all_sites=False):
+    """Return (sites, summary). Sites are ordered deterministically.
+
+    With `all_sites`, the returned list is the whole population with the
+    selected sites first; otherwise it is only the selected sites.
+    """
     candidates = []
     parse_errors = []
     unreachable_files = 0
@@ -640,17 +673,21 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
     inbound = inbound_counts(files)
     total = len(judged)
     per_file = max(3, min(MAX_SITES_PER_FILE, max_sites // 5))
-    limited = select_sites(judged, inbound, limit=max_sites, per_file=per_file)
+    selected, population = select_sites_with_remainder(judged, inbound, limit=max_sites,
+                                                       per_file=per_file)
+    chosen = population if all_sites else selected
 
     sites = []
-    for index, site in enumerate(limited, start=1):
+    for index, site in enumerate(chosen, start=1):
         record = {"site_id": "s_%03d" % index}
         record.update(site)
         sites.append(record)
 
     summary = {
         "candidates": total,
-        "emitted": len(sites),
+        "emitted": len(selected),
+        "population": len(population),
+        "all_sites": all_sites,
         "limit": max_sites,
         "per_file": per_file,
         "limit_hit": total > max_sites,
