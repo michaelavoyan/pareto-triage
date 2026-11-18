@@ -104,18 +104,39 @@ class ObjcImportTests(unittest.TestCase):
         ]
         self.assertEqual(build_graph(files)["Signal/A.m"], set())
 
-    def test_duplicate_basenames_pick_the_shallower_path_every_time(self):
+    def test_duplicate_basenames_from_another_directory_stay_unresolved(self):
         files = [
-            source("App/Uses.m", '#import "Shared.h"\n'),
+            source("Other/Uses.m", '#import "Shared.h"\n'),
             source("App/Shared.h", "@interface Shared : NSObject\n@end\n"),
             source("App/Shared.m", '#import "Shared.h"\n'),
             source("App/Deep/Nest/Shared.h", "@interface Shared : NSObject\n@end\n"),
             source("App/Deep/Nest/Shared.m", '#import "Shared.h"\n'),
         ]
-        first = build_graph(files)["App/Uses.m"]
-        second = build_graph(files)["App/Uses.m"]
-        self.assertEqual(first, {"App/Shared.m"})
-        self.assertEqual(first, second)
+        meta = {}
+        graph = build_graph(files, meta=meta)
+        self.assertEqual(graph["Other/Uses.m"], set())
+        self.assertEqual(meta["objc"]["ambiguous"], 1)
+        self.assertEqual(build_graph(files)["Other/Uses.m"], set())
+
+    def test_a_directory_path_that_does_not_match_still_takes_a_unique_basename(self):
+        hits = build_graph(self.files)["Signal/Orders/Recent.m"]
+        self.assertEqual(hits, {"Signal/Legacy/Dates.m"})
+
+    def test_basename_fallbacks_and_ambiguity_are_counted_in_reach_meta(self):
+        meta = {}
+        build_graph(self.files, meta=meta)
+        self.assertEqual(meta["objc"]["basename_fallbacks"], 1)
+        self.assertEqual(meta["objc"]["ambiguous"], 1)
+
+    def test_a_unique_basename_with_no_implementation_resolves_to_the_header(self):
+        files = [
+            source("App/Uses.m", '#import "Only/Declared.h"\n'),
+            source("App/Declared.h", "@interface Declared : NSObject\n@end\n"),
+        ]
+        meta = {}
+        build_graph(files, meta=meta)
+        self.assertEqual(meta["objc"]["resolved"], 1)
+        self.assertEqual(meta["objc"]["basename_fallbacks"], 1)
 
     def test_relative_import_is_normalised_from_the_importing_directory(self):
         files = [

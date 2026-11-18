@@ -259,22 +259,45 @@ def _objc_impl_of(known):
     return impl
 
 
-def _resolve_objc(rel, spec, index, impl_of):
-    """`#import "A/B.h"` -> the scanned path ending in `A/B.h`, then its impl."""
+def _resolve_objc(rel, spec, index, impl_of, counts=None):
+    """`#import "A/B.h"` -> the scanned path ending in `A/B.h`, then its impl.
+
+    When the path does not resolve, a basename that exactly one scanned file
+    carries is that file: an Xcode header search path is never named in the
+    import, so `#import "Helpers/Dates.h"` can land on `Signal/Legacy/Dates.h`.
+    Two or more files with that basename leave the import unresolved and are
+    counted: guessing between them would invent an edge.
+    """
     spec = spec.strip()
     if not spec:
         return None
-    candidates = []
-    if spec.startswith("."):
-        candidates.append(posixpath.normpath(
-            posixpath.join(posixpath.dirname(rel), spec)))
-    candidates.append(posixpath.normpath(spec))
-    for candidate in candidates:
-        if candidate.startswith("../"):
-            continue
-        hit = _suffix_lookup(index, candidate)
-        if hit:
-            return impl_of.get(hit, hit)
+    counted = counts is not None
+
+    def _hit(path):
+        hit = _suffix_lookup(index, path)
+        return impl_of.get(hit, hit) if hit else None
+
+    local = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
+    if not local.startswith("../"):
+        target = _hit(local)
+        if target:
+            return target
+
+    # A bare basename is not a path: step 3 is the only honest reading of it.
+    if "/" in spec:
+        normalised = posixpath.normpath(spec)
+        if not normalised.startswith("../"):
+            target = _hit(normalised)
+            if target:
+                return target
+
+    hits = index.get(posixpath.basename(spec)) or []
+    if len(hits) == 1:
+        if counted:
+            counts["basename_fallbacks"] += 1
+        return impl_of.get(hits[0], hits[0])
+    if len(hits) > 1 and counted:
+        counts["ambiguous"] += 1
     return None
 
 
@@ -405,10 +428,17 @@ def build_graph(files, aliases=None, meta=None):
             if objc_index is None:
                 objc_index = _objc_index(known)
                 objc_impl = _objc_impl_of(known)
+                objc_counts = {"imports": 0, "resolved": 0,
+                               "basename_fallbacks": 0, "ambiguous": 0}
             for match in OBJC_IMPORT_RE.finditer(text):
-                target = _resolve_objc(rel, match.group(1), objc_index, objc_impl)
+                objc_counts["imports"] += 1
+                target = _resolve_objc(rel, match.group(1), objc_index, objc_impl,
+                                       objc_counts)
+                if not target:
+                    continue
+                objc_counts["resolved"] += 1
                 # A header with no implementation is not a node; nothing to lift.
-                if target and target != rel and target in graph:
+                if target != rel and target in graph:
                     graph[rel].add(target)
         elif f["ext"] in SWIFT_EXTS:
             if swift is None:
