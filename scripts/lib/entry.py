@@ -106,6 +106,36 @@ JVM_CLASS_RE = re.compile(
     r"class[ \t]+([A-Za-z_$][\w$]*)",
     re.M)
 
+# Swift: classes only. A `struct` has no inheritance chain, so there is nothing
+# to follow, and `class func`/`class var` are modifiers. `@main` marks the
+# process entry; `@UIApplicationMain` and the UIApplicationMain(...) call are
+# the older spelling of the same thing.
+SWIFT_CLASS_RE = re.compile(
+    r"^[ \t]*(?:(?:@[A-Za-z_][\w.]*(?:\([^)]*\))?"
+    r"|(?:public|internal|private|fileprivate|open|final|indirect))[ \t]+)*"
+    r"class[ \t]+(?!(?:func|var|let|subscript|init|deinit)\b)"
+    r"([A-Za-z_][A-Za-z0-9_]*)", re.M)
+
+SWIFT_MAIN_ATTR_RE = re.compile(r"^[ \t]*@(?:main|UIApplicationMain)\b", re.M)
+UIKIT_MAIN_CALL_RE = re.compile(r"\bUIApplicationMain[ \t]*\(")
+
+# Objective-C: `@interface X : Super <Proto, Proto>` and the category form
+# `@interface X (Cat)` that inherits nothing. Superclass and protocols are
+# collected so the same chain walker can serve both languages.
+OBJC_INTERFACE_RE = re.compile(
+    r"^[ \t]*@interface[ \t]+([A-Za-z_][A-Za-z0-9_]*)"
+    r"(?:[ \t]*\([^)]*\))?"
+    r"(?:[ \t]*:[ \t]*([A-Za-z_][A-Za-z0-9_]*))?", re.M)
+OBJC_PROTOCOL_RE = re.compile(r"<([^<>]*)>")
+
+# The framework instantiates these; nothing in the app calls them.
+IOS_VIEW_BASES = {
+    "UIViewController": ("ui", "VIEWCONTROLLER"),
+    "UIView": ("ui", "VIEWCONTROLLER"),
+}
+IOS_APP_DELEGATES = {"UIApplicationDelegate", "AppDelegate", "SceneDelegate"}
+
+
 # Rx `.subscribe(` is not a queue entrypoint: it is how an in-process stream is
 # consumed, and on Signal-Android every one of the 113 "consumers" was an
 # internal subscription. Count it only when the path names a worker or service
@@ -644,6 +674,8 @@ def extract_entrypoints(files):
         for pattern, label in CRON_RES:
             for hit in _collect(pattern, text, rel, lambda m, l=label: {"kind": "cron", "detail": l}):
                 found.append(hit)
+
+    found.extend(_ios_entrypoints(files))
 
     seen = set()
     unique = []

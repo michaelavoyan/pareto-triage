@@ -28,7 +28,6 @@ The measurement is per repo and applies to every repo. Signal-iOS is the case th
 
 An entrypoint on a file with no source language — a `package.json` `bin`, which names a script rather than holding one — is not judged by share: it has no lines of its own to weigh. `scope.json` records the kept entrypoints in `entrypoints`, the ignored languages in `entrypoints_ignored`, and the floor in `gate.entrypoint_language_floor`.
 
-
 ## Framework patterns (v1)
 
 ```
@@ -44,6 +43,8 @@ Android      Java `extends` / Kotlin `:` against a component base name:
              Activity · AppCompatActivity · ComponentActivity · FragmentActivity · Fragment
              Service · IntentService · JobService · Worker · BroadcastReceiver · ContentProvider
              Application
+iOS          `@main` · `@UIApplicationMain` · `UIApplicationMain(` · `UIApplicationDelegate`
+             `AppDelegate` · `SceneDelegate` · `UIViewController` · `UIView`
 ```
 
 Adding a framework is one regex family plus one fixture. Do not add a framework without a fixture that proves the extraction works.
@@ -59,6 +60,18 @@ Only these exact base names match directly. A class that reaches one through a p
 An ancestor that is neither a component base nor a declaration in the scanned set is a dead branch: the class is **not** seeded. The extractor never guesses a base from its name, so a dependency class outside the repo, a generated base with no scanned source, and a typo all stay unseeded rather than inventing a root. A class named `Activity` in some other framework is indistinguishable and would be seeded: base names are checked, not imports.
 
 Measured on Signal-Android (9,982 files, 819,290 non-blank lines): before following project bases the scan finds 73 `ui`, 53 `background` (38 receivers, 14 services, one provider), and 6 `app`. With the four-hop chain it finds 299 `ui`, 69 `background` (46 receivers, 19 services, four providers), and 10 `app` — 246 more components, which matches the ~248 counted by hand. `ComposeFragment` alone accounts for 95 UI classes. The seed count is still a floor — a base class declared outside the scanned set, or a chain longer than four hops, stays out — and the report says so.
+
+### iOS components
+
+Swift and Objective-C reuse the same type table and four-hop chain walker as Android. The framework instantiates these too, so a file that holds one is an entrypoint by declaration.
+
+- `@main`, `@UIApplicationMain`, and the `UIApplicationMain(…)` call are the process entry: `ui`, seed 5, detail `MAIN`.
+- A class conforming to `UIApplicationDelegate`, `AppDelegate`, or `SceneDelegate` is `app`, seed 3, detail `APPDELEGATE AppDelegate`. Conformance is read from the class's own declaration only; Swift does not inherit it, so a subclass of a project delegate is not a delegate.
+- A `UIViewController` or `UIView` subclass is `ui`, seed 5, detail `VIEWCONTROLLER ConversationViewController`. The walker crosses project base classes, so `ConversationViewController -> BaseViewController -> UIViewController` is seeded and the detail still names the class that is the entrypoint.
+- ObjC `@interface AccountsViewController : UIViewController` and `@interface AppDelegate : NSObject <UIApplicationDelegate>` are read from the declaration and seed the scanned `.m`/`.mm`. A header with no implementation has no body to rank and is not seeded.
+- `@IBAction` handlers are not seeded separately. The controller already covers the file; seeding each handler would multiply one file's seeds and add no reach.
+
+A plain `struct`, a `class` with no framework base, and a class whose chain ends at an unscanned name are not seeded. A `class` declaration in a comment is stripped before parsing, and line numbers survive block comments.
 
 ## Removed: plain `.subscribe(`
 
@@ -87,9 +100,9 @@ Anything less specific is not a seed. A false seed is worse than a missing one: 
 ## Call graph and reach
 
 ```
-reach = 5  the file registers a route, is an Android UI component, or is included
+reach = 5  the file registers a route, is an Android UI component or iOS view controller, or is included
 reach = 4  middleware, cron, consumer, or Android background component
-reach = 3  CLI entrypoint, package export, or Android Application subclass
+reach = 3  CLI entrypoint, package export, Android Application subclass, or iOS app delegate
 reach = 2  imported within depth 3 of any seed, floor
 reach = 1  present in the repo, no path from any entrypoint
 reach = 0  in the repo but unreadable (binary, oversized, non-utf-8)
