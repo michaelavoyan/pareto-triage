@@ -28,7 +28,7 @@ TEST_DIR_SEGMENTS = ("/test/", "/tests/", "/androidtest/", "/androidtestdebug/",
                      "/__tests__/", "/spec/", "/testdata/", "/integrationtest/")
 
 TEST_FILE_PATTERNS = [
-    r"(^|/)[^/]+(Test|Tests|IT|Spec)\.(java|kt|kts)$",
+    r"(^|/)[^/]+(Test|Tests|IT|Spec)\.(java|kt|kts|swift|m|mm)$",
     r"(^|/)test_[^/]+\.py$",
     r"(^|/)[^/]+_test\.py$",
     r"\.(test|spec)\.(ts|tsx|js|jsx|mjs)$",

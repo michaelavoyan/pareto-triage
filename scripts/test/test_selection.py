@@ -84,3 +84,18 @@ class SelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFileExclusionTests(unittest.TestCase):
+    def test_test_files_are_excluded_even_when_reachable(self):
+        from lib.context import extract_sites
+
+        files = [
+            {"rel": "src/app.swift", "ext": ".swift",
+             "text": "class AppDelegate {\n  func boot() {\n    start()\n  }\n}\n"},
+            {"rel": "src/appTests.swift", "ext": ".swift",
+             "text": "class AppTests {\n  func testThing() {\n    XCTAssert(true)\n  }\n}\n"},
+        ]
+        sites, summary = extract_sites(files, lambda rel: 5)
+        self.assertEqual([s["file"] for s in sites], ["src/app.swift"])
+        self.assertEqual(summary["test_files_excluded"], 1)

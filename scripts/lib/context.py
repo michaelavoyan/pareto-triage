@@ -1184,6 +1184,9 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
         if ext not in JS_EXT and ext not in PY_EXT and ext not in JVM_EXT \
                 and ext not in SWIFT_EXT and ext not in OBJC_EXT:
             continue
+        if is_test_path(rel):
+            test_files += 1
+            continue
         reach = reach_of(rel)
         if reach < min_reach:
             unreachable_files += 1
