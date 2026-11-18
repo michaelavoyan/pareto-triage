@@ -185,13 +185,18 @@ def _dedupe_findings(findings):
 def _print_swift_notes(reach_meta):
     """Say what the Swift graph actually knows, instead of leaving it implied."""
     swift = reach_meta.get("swift")
-    if not swift or not swift.get("swift_files"):
-        return
-    print("swift      %d file(s), %d mapped to a target, %d mention edge(s), %d module edge(s)"
-          % (swift["swift_files"], swift["mapped_files"], swift["mention_edges"],
-             swift["module_edges"]))
-    if swift.get("note"):
-        print("           %s" % swift["note"])
+    if swift and swift.get("swift_files"):
+        print("swift      %d file(s), %d mapped to a target, %d mention edge(s); "
+              "module imports add no edge"
+              % (swift["swift_files"], swift["mapped_files"], swift["mention_edges"]))
+        if swift.get("note"):
+            print("           %s" % swift["note"])
+    objc = reach_meta.get("objc")
+    if objc and objc.get("imports"):
+        print("objc       %d #import(s), %d resolved, %d by unique basename, "
+              "%d ambiguous (not resolved)"
+              % (objc["imports"], objc["resolved"], objc["basename_fallbacks"],
+                 objc["ambiguous"]))
 
 
 def _stale_reasons(ranked, out_dir, files):

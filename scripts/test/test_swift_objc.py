@@ -171,8 +171,8 @@ class SwiftTargetTests(unittest.TestCase):
     def test_an_unmapped_file_gets_no_edges(self):
         self.assertEqual(self.graph[ORPHAN], set())
 
-    def test_a_module_import_maps_to_that_targets_files(self):
-        self.assertEqual(self.graph[IMPORTER], {CORE_STORE})
+    def test_a_module_import_creates_no_edge(self):
+        self.assertEqual(self.graph[IMPORTER], set())
 
     def test_an_import_of_a_module_that_is_not_a_target_is_ignored(self):
         files = [
@@ -215,7 +215,8 @@ class SwiftTargetTests(unittest.TestCase):
         self.assertEqual(swift["swift_files"], 6)
         self.assertEqual(swift["mapped_files"], 5)
         self.assertEqual(swift["mention_edges"], 1)
-        self.assertEqual(swift["module_edges"], 1)
+        self.assertEqual(swift["module_edges"], 0)
+        self.assertEqual(swift["module_edge_rule"], "dropped")
         self.assertIsNone(swift["note"])
 
     def test_without_a_project_file_the_graph_says_so_instead_of_guessing(self):
@@ -232,7 +233,7 @@ class SwiftTargetTests(unittest.TestCase):
 
     def test_reach_meta_from_compute_reach_carries_the_swift_section(self):
         reach, meta = compute_reach(self.files, [], seeds={IMPORTER: 5}, max_depth=3)
-        self.assertEqual(reach(CORE_STORE), 4)
+        self.assertEqual(reach(CORE_STORE), 1)  # a module import is not an edge
         self.assertEqual(reach(ORPHAN), 1)
         self.assertEqual(meta["swift"]["pbxproj"], [PBXPROJ])
 
