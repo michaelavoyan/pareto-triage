@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `context` extracts Swift and Objective-C sites instead of refusing on an iOS
+  repo. Swift `func`/`init`/`deinit` and computed `var` bodies are sites; a type
+  body is a site only when nothing inside it is, so a class collapses into its
+  methods and properties. Objective-C `-`/`+` methods are sites, with or without
+  a wrapped signature; `@implementation` is a container, never judged, and each
+  method names it in `enclosed_by`. Bounds survive `"""…"""` multi-line strings,
+  `#"…"#`/`##"…"##` raw strings, `\(…)` interpolation — including a string or
+  closure inside the interpolation — `@"…"` strings, and `^{…}` block literals.
+  On Signal-iOS every file at reach ≥ 2 is Swift, so the old extractor returned
+  no candidate at all and `context` refused with `no candidate sites`; the same
+  run now yields 17,457 candidates from 158 reachable files, 200 of them kept at
+  `--limit 200`. All 200 start on a declaration line: 136 function declarations,
+  9 attribute-headed functions, 44 computed properties, 11 type bodies. 22 of the
+  200 (11%) contain `try`, `catch`, `await`, or a network call, against 7% of the
+  population, so phase 2 has something to judge on this repo. Objective-C is
+  measured on fixtures only: the tree has 34 `.m` files and none of them reaches
+  2.
 - Entrypoints come only from a language that carries the repo. A language must
   hold at least 5% of the supported non-blank lines for its entrypoints to
   count; below that they are ignored and named in a gate warning. Before this,

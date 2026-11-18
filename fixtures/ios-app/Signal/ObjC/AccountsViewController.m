@@ -1,4 +1,5 @@
 #import "AccountsViewController.h"
+#import "LegacyStore.h"
 
 @implementation AccountsViewController
 
