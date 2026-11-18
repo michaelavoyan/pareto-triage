@@ -4,11 +4,11 @@ Phase 2 asks a model to judge one function at a time. It needs a bounded,
 deterministic list of functions that are actually reachable from an entrypoint,
 not the whole repository. This module produces that list.
 
-What it is not: a parser. Python uses `ast`; JavaScript, TypeScript, Java and
-Kotlin use brace matching over regex-found headers. All of it is approximate by
-design and documented in references/entrypoints.md. A site whose bounds are
-wrong produces evidence that fails `pareto-triage validate`, which is a visible
-failure rather than a silent one.
+What it is not: a parser. Python uses `ast`; JavaScript, TypeScript, Java,
+Kotlin, Swift and Objective-C use brace matching over regex-found headers. All
+of it is approximate by design and documented in references/entrypoints.md. A
+site whose bounds are wrong produces evidence that fails `pareto-triage
+validate`, which is a visible failure rather than a silent one.
 
 There are two ways to fill the cap. `random` shuffles the candidate population
 with a seed and then applies the per-file cap; `ranked` keeps the old reach →
@@ -27,12 +27,15 @@ from .walk import is_test_path
 JS_EXT = {".ts", ".tsx", ".mts", ".cts", ".js", ".jsx", ".mjs", ".cjs"}
 PY_EXT = {".py"}
 JVM_EXT = {".java", ".kt", ".kts"}
+SWIFT_EXT = {".swift"}
+OBJC_EXT = {".m", ".mm"}
 
 LANG_BY_EXT = {
     ".ts": "ts", ".tsx": "ts", ".mts": "ts", ".cts": "ts",
     ".js": "js", ".jsx": "js", ".mjs": "js", ".cjs": "js",
     ".py": "py",
     ".java": "java", ".kt": "kotlin", ".kts": "kotlin",
+    ".swift": "swift", ".m": "objc", ".mm": "objc",
 }
 
 MAX_SITES_DEFAULT = 400
@@ -53,6 +56,7 @@ IMPORT_LINE_RES = [
     re.compile(r"^\s*import\s.+$", re.M),
     re.compile(r"^\s*from\s+\S+\s+import\s.+$", re.M),
     re.compile(r"^\s*(?:const|let|var)\s+[\w${}\s,]+=\s*require\(.+$", re.M),
+    re.compile(r"^\s*#\s*(?:import|include)\s+.+$", re.M),
 ]
 
 # Client construction and middleware registration. A timeout or retry policy
@@ -137,6 +141,80 @@ JVM_KEYWORDS = {
     "do", "try", "synchronized", "assert", "case", "break", "continue", "this",
     "super", "package", "import", "class", "interface", "enum", "record",
 }
+
+# Swift declaration modifiers. `class` is here because `class func` and
+# `class var` exist; type declarations are matched separately and backtrack out
+# of it. `nonisolated`, `package`, and `distributed` are newer but appear in
+# real code, and an unknown modifier would hide the declaration entirely.
+SWIFT_MODIFIERS = (
+    r"(?:public|private|fileprivate|internal|open|package|final|static|class|"
+    r"override|required|convenience|mutating|nonmutating|nonisolated|isolated|"
+    r"lazy|weak|unowned|dynamic|optional|indirect|distributed|prefix|postfix|infix)"
+)
+
+# A backticked name is legal Swift (`func `default`()`), so it is matched and
+# unwrapped rather than dropped.
+SWIFT_NAME = r"(`[^`\n]+`|[A-Za-z_]\w*)"
+
+SWIFT_FUNC_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + SWIFT_MODIFIERS + r"[ \t]+)*"
+    r"func[ \t]+" + SWIFT_NAME + r"[ \t]*(?:<[^>\n]*>)?[ \t]*\(",
+    re.M)
+
+SWIFT_INIT_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + SWIFT_MODIFIERS + r"[ \t]+)*"
+    r"init[?!]?[ \t]*\(",
+    re.M)
+
+SWIFT_DEINIT_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + SWIFT_MODIFIERS + r"[ \t]+)*"
+    r"deinit\b",
+    re.M)
+
+# A property site needs a body brace; the optional type annotation stops at
+# `{`, `=`, or the newline so a stored property cannot swallow the next line.
+# Only `var` is matched: `let` cannot have a computed body, and a local
+# `let x: T?` would otherwise latch onto the `{` of the `if` beneath it.
+SWIFT_PROPERTY_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + SWIFT_MODIFIERS + r"[ \t]+)*"
+    r"var[ \t]+" + SWIFT_NAME + r"[ \t]*"
+    r"(?::[^{=\n]+)?",
+    re.M)
+
+SWIFT_TYPE_RE = re.compile(
+    r"^[ \t]*" + ANNOTATION_PREFIX +
+    r"(?:" + SWIFT_MODIFIERS + r"[ \t]+)*"
+    r"(?:class|struct|enum|protocol|extension|actor)[ \t]+([A-Za-z_]\w*)",
+    re.M)
+
+SWIFT_KEYWORDS = {
+    "func", "var", "let", "init", "deinit", "subscript", "typealias", "case",
+    "static", "class", "struct", "enum", "protocol", "extension", "actor",
+}
+
+# Start of a declaration on the next line: a bodyless `func` signature, a
+# stored property, or `}` must not be stretched over the declaration below it.
+SWIFT_DECLARATION_LINE_RE = re.compile(
+    r"[ \t]*(?:@[A-Za-z_]|(?:public|private|fileprivate|internal|open|package|"
+    r"final|static|class|override|required|convenience|lazy|weak|unowned|dynamic|"
+    r"mutating|nonmutating|nonisolated|indirect|optional)[ \t]|"
+    r"(?:func|var|let|init|deinit|case|subscript|typealias|associatedtype|"
+    r"class|struct|enum|protocol|extension|actor|import)\b)")
+
+SWIFT_CONTINUATION_RE = re.compile(r"(?:[=+\-*/%<>!&|^~?,.:]|&&|\|\|)[ \t]*$")
+
+# Objective-C method declarations. The return type is scanned with paren
+# matching because it can itself be a block type, `- (void (^)(BOOL))done`.
+OBJC_METHOD_HEAD_RE = re.compile(r"^[ \t]*([+-])[ \t]*\(", re.M)
+OBJC_IMPLEMENTATION_RE = re.compile(r"^[ \t]*@implementation[ \t]+([A-Za-z_]\w*)", re.M)
+OBJC_END_RE = re.compile(r"^[ \t]*@end\b", re.M)
+
+# `get`/`set` alone is a protocol property requirement, not an implementation.
+SWIFT_ACCESSOR_ONLY_RE = re.compile(r"(?:get|set|_read|_modify|\s)*")
 
 
 def _line_of(text, index):
@@ -444,6 +522,401 @@ def _jvm_sites(text, rel):
     return out
 
 
+def _skip_block_comment(text, index):
+    """Index just past a block comment, allowing Swift's nested comments."""
+    depth = 0
+    while index < len(text):
+        if text.startswith("/*", index):
+            depth += 1
+            index += 2
+            continue
+        if text.startswith("*/", index):
+            depth -= 1
+            index += 2
+            if depth <= 0:
+                return index
+            continue
+        index += 1
+    return index
+
+
+def _swift_string_start(text, index):
+    """True when a Swift string literal opens at `index` (raw hashes included)."""
+    cursor = index
+    while cursor < len(text) and text[cursor] == "#":
+        cursor += 1
+    return cursor < len(text) and text[cursor] == '"'
+
+
+def _swift_interpolation_end(text, index):
+    """Index just past the `)` closing an interpolation opened at `index`."""
+    parens = 0
+    braces = 0
+    while index < len(text):
+        char = text[index]
+        if char == '"' or (char == "#" and _swift_string_start(text, index)):
+            index = _swift_skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            index = _skip_block_comment(text, index)
+            continue
+        if char == "(":
+            parens += 1
+        elif char == ")":
+            parens -= 1
+            if parens == 0 and braces == 0:
+                return index + 1
+        elif char == "{":
+            braces += 1
+        elif char == "}":
+            braces -= 1
+        index += 1
+    return index
+
+
+def _swift_skip_string(text, index):
+    """Index just past a Swift string literal at `index`.
+
+    Handles `\"\"\"` multi-line strings, `#\"…\"#` / `##\"…\"##` raw strings whose
+    terminator repeats the hash count, and `\\(…)` interpolation. Interpolation is
+    scanned as code because it can hold another string, and therefore another
+    quote, which a plain skip would mistake for the end of the literal.
+    """
+    hashes = 0
+    cursor = index
+    while cursor < len(text) and text[cursor] == "#":
+        hashes += 1
+        cursor += 1
+    if cursor >= len(text) or text[cursor] != '"':
+        return index + 1
+    quotes = 3 if text.startswith('"""', cursor) else 1
+    cursor += quotes
+    terminator = '"' * quotes + "#" * hashes
+    escape = "\\" + "#" * hashes
+    while cursor < len(text):
+        if text.startswith(terminator, cursor):
+            return cursor + len(terminator)
+        if text.startswith(escape, cursor):
+            after = cursor + len(escape)
+            if after < len(text) and text[after] == "(":
+                cursor = _swift_interpolation_end(text, after)
+                continue
+            cursor = after + 1
+            continue
+        cursor += 1
+    return cursor
+
+
+def _swift_match_brace(text, open_index):
+    """Return the index of the brace closing text[open_index], or -1."""
+    depth = 0
+    index = open_index
+    while index < len(text):
+        char = text[index]
+        if char == '"' or (char == "#" and _swift_string_start(text, index)):
+            index = _swift_skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            index = _skip_block_comment(text, index)
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
+def _swift_paren_end(text, open_index):
+    """Return the index of the paren closing text[open_index], or -1."""
+    depth = 0
+    index = open_index
+    while index < len(text):
+        char = text[index]
+        if char == '"' or (char == "#" and _swift_string_start(text, index)):
+            index = _swift_skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            index = _skip_block_comment(text, index)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                return index
+        index += 1
+    return -1
+
+
+def _swift_body(text, index, expression_body, same_line=False):
+    """Find a Swift declaration body from just after its signature.
+
+    Returns ("brace", open_index), ("expression", index), or (None, -1). A
+    blank line, `}`/`;`, or a line that starts another declaration means this
+    one has no body, so a protocol requirement or stored property cannot stretch
+    over the function or property below it.
+
+    `same_line` restricts a brace to the declaration's own line or the first
+    character of the next one. A computed property is written that way; a local
+    `var` followed by an `if` is not a property, and without the restriction its
+    body would run to the `if`'s closing brace.
+    """
+    limit = min(len(text), index + 400)
+    while index < limit:
+        char = text[index]
+        if char == '"' or (char == "#" and _swift_string_start(text, index)):
+            index = _swift_skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            index = _skip_block_comment(text, index)
+            continue
+        if char == "{":
+            return "brace", index
+        if char == "=":
+            if expression_body:
+                return "expression", index
+            return None, -1
+        if char in ";}":
+            return None, -1
+        if char == "\n":
+            cursor = index + 1
+            while cursor < len(text) and text[cursor] in " \t\r":
+                cursor += 1
+            if same_line:
+                if cursor < len(text) and text[cursor] == "{":
+                    return "brace", cursor
+                return None, -1
+            if cursor < len(text) and text[cursor] == "\n":
+                return None, -1
+            if cursor < len(text) and SWIFT_DECLARATION_LINE_RE.match(text, cursor):
+                return None, -1
+        index += 1
+    return None, -1
+
+
+def _swift_expression_end(text, index):
+    """End of an `= expression` body: its line, extended by open brackets.
+
+    A trailing operator, comma, dot, or colon continues the expression onto the
+    next line. An operator at the end of a line is how Swift wraps a single
+    expression without brackets; the next line is checked for a declaration so
+    the wrap cannot swallow the declaration that follows.
+    """
+    depth = 0
+    while index < len(text):
+        char = text[index]
+        if char == '"' or (char == "#" and _swift_string_start(text, index)):
+            index = _swift_skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            if newline < 0:
+                return len(text) - 1
+            index = newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            index = _skip_block_comment(text, index)
+            continue
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth -= 1
+        elif char == "\n" and depth <= 0:
+            line_start = text.rfind("\n", 0, index) + 1
+            next_start = index + 1
+            while next_start < len(text) and text[next_start] in " \t\r":
+                next_start += 1
+            if (not SWIFT_CONTINUATION_RE.search(text[line_start:index])
+                    or SWIFT_DECLARATION_LINE_RE.match(text, next_start)):
+                return max(0, index - 1)
+        index += 1
+    return len(text) - 1
+
+
+def _swift_sites(text, rel):
+    lines = text.split("\n")
+    out = []
+
+    for match in SWIFT_FUNC_RE.finditer(text):
+        name = match.group(1).strip("`")
+        if name in SWIFT_KEYWORDS:
+            continue
+        close_paren = _swift_paren_end(text, match.end() - 1)
+        if close_paren < 0:
+            continue
+        style, body = _swift_body(text, close_paren + 1, True)
+        if style is None:
+            continue
+        if style == "brace":
+            close = _swift_match_brace(text, body)
+            end_index = close if close >= 0 else len(text) - 1
+        else:
+            end_index = _swift_expression_end(text, body)
+            # `func f() -> Int = expr` is a site only when the expression wraps:
+            # a one-line body names no failure mode a line of source can carry.
+            if _line_of(text, body) == _line_of(text, end_index):
+                continue
+        start = _annotation_line(lines, _line_of(text, match.start()))
+        out.append({
+            "name": name,
+            "start": start,
+            "end": max(start, _line_of(text, end_index)),
+        })
+
+    for match in SWIFT_INIT_RE.finditer(text):
+        close_paren = _swift_paren_end(text, match.end() - 1)
+        if close_paren < 0:
+            continue
+        style, body = _swift_body(text, close_paren + 1, False)
+        if style != "brace":
+            continue
+        close = _swift_match_brace(text, body)
+        end_index = close if close >= 0 else len(text) - 1
+        start = _annotation_line(lines, _line_of(text, match.start()))
+        out.append({
+            "name": "init",
+            "start": start,
+            "end": max(start, _line_of(text, end_index)),
+        })
+
+    for match in SWIFT_DEINIT_RE.finditer(text):
+        style, body = _swift_body(text, match.end(), False)
+        if style != "brace":
+            continue
+        close = _swift_match_brace(text, body)
+        end_index = close if close >= 0 else len(text) - 1
+        start = _annotation_line(lines, _line_of(text, match.start()))
+        out.append({
+            "name": "deinit",
+            "start": start,
+            "end": max(start, _line_of(text, end_index)),
+        })
+
+    for match in SWIFT_PROPERTY_RE.finditer(text):
+        name = match.group(1).strip("`")
+        style, body = _swift_body(text, match.end(), False, same_line=True)
+        if style != "brace":
+            continue  # stored property: no body, not a site
+        close = _swift_match_brace(text, body)
+        if close < 0:
+            continue
+        if SWIFT_ACCESSOR_ONLY_RE.fullmatch(text[body + 1:close]):
+            continue  # a protocol's `{ get set }` requirement has no body
+        start = _annotation_line(lines, _line_of(text, match.start()))
+        out.append({
+            "name": name,
+            "start": start,
+            "end": max(start, _line_of(text, close)),
+        })
+
+    for match in SWIFT_TYPE_RE.finditer(text):
+        name = match.group(1)
+        if name in SWIFT_KEYWORDS:
+            continue
+        style, body = _swift_body(text, match.end(), False)
+        if style != "brace":
+            continue
+        close = _swift_match_brace(text, body)
+        end_index = close if close >= 0 else len(text) - 1
+        start = _annotation_line(lines, _line_of(text, match.start()))
+        out.append({
+            "name": name,
+            "start": start,
+            "end": max(start, _line_of(text, end_index)),
+        })
+
+    return out
+
+
+def _objc_body(text, index):
+    """The brace that opens an Objective-C method body, or -1.
+
+    The signature may wrap over several lines, so the scan does not stop at a
+    newline; `;` ends a declaration with no body (a protocol or interface
+    member).
+    """
+    limit = min(len(text), index + 2000)
+    while index < limit:
+        char = text[index]
+        if char in "\"'":
+            index = _skip_string(text, index)
+            continue
+        if char == "/" and text.startswith("//", index):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        if char == "/" and text.startswith("/*", index):
+            close = text.find("*/", index + 2)
+            index = len(text) if close < 0 else close + 2
+            continue
+        if char == "{":
+            return index
+        if char == ";":
+            return -1
+        index += 1
+    return -1
+
+
+def _objc_container_spans(text):
+    """`@implementation Name` … `@end` ranges, used only for `enclosed_by`."""
+    spans = []
+    for match in OBJC_IMPLEMENTATION_RE.finditer(text):
+        end = OBJC_END_RE.search(text, match.end())
+        spans.append((match.start(), end.start() if end else len(text), match.group(1)))
+    return spans
+
+
+def _objc_sites(text, rel):
+    out = []
+    spans = _objc_container_spans(text)
+    for match in OBJC_METHOD_HEAD_RE.finditer(text):
+        close_type = _paren_end(text, match.end() - 1)
+        if close_type < 0:
+            continue
+        cursor = close_type + 1
+        while cursor < len(text) and text[cursor] in " \t":
+            cursor += 1
+        name_match = re.match(r"[A-Za-z_]\w*", text[cursor:])
+        if not name_match:
+            continue
+        name = name_match.group(0)
+        body = _objc_body(text, cursor + name_match.end())
+        if body < 0:
+            continue
+        close = _match_brace(text, body)
+        end_index = close if close >= 0 else len(text) - 1
+        site = {
+            "name": name,
+            "start": _line_of(text, match.start()),
+            "end": _line_of(text, end_index),
+        }
+        container = [name for start, end, name in spans
+                     if start < match.start() < end]
+        if container:
+            site["enclosed_by"] = [container[-1]]
+        out.append(site)
+    return out
+
+
 def _py_sites(text, rel):
     try:
         tree = ast.parse(text)
@@ -708,7 +1181,8 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
     for f in files:
         rel = f["rel"]
         ext = f["ext"]
-        if ext not in JS_EXT and ext not in PY_EXT and ext not in JVM_EXT:
+        if ext not in JS_EXT and ext not in PY_EXT and ext not in JVM_EXT \
+                and ext not in SWIFT_EXT and ext not in OBJC_EXT:
             continue
         reach = reach_of(rel)
         if reach < min_reach:
@@ -723,6 +1197,10 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
                 continue
         elif ext in JVM_EXT:
             found = _jvm_sites(text, rel)
+        elif ext in SWIFT_EXT:
+            found = _swift_sites(text, rel)
+        elif ext in OBJC_EXT:
+            found = _objc_sites(text, rel)
         else:
             found = _js_sites(text, rel)
 
@@ -747,6 +1225,7 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
                 "surrounding": surrounding,
                 "surrounding_truncated": surrounding_truncated,
                 "truncated": truncated,
+                **({"enclosed_by": item["enclosed_by"]} if item.get("enclosed_by") else {}),
             })
 
     collapsed = extract_sites_collapse(candidates, include_enclosing)
