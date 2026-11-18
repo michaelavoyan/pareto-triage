@@ -43,6 +43,9 @@ HEADER_EXTS = {".h"}
 OBJC_IMPORT_RE = re.compile(r"""^[ \t]*#[ \t]*import[ \t]*[<"]([^>"]+)[>"]""", re.M)
 
 # Swift has no file-level imports, so an edge needs a declared type and a target.
+# `import Module` is deliberately not an edge: it names a module, not a file,
+# and matching it to a target's files lifted 1,693,481 edges (97% of the graph)
+# on Signal-iOS while carrying no information about which file calls which.
 SWIFT_EXTS = {".swift"}
 # `class func` and `class var` are modifiers, not type declarations: without the
 # negative lookahead a Swift file "declares" a type called `func`, which then
@@ -53,10 +56,6 @@ SWIFT_TYPE_RE = re.compile(
     r"(?:class|struct|enum|protocol|actor|typealias)[ \t]+"
     r"(?!(?:func|var|let|subscript|init|deinit)\b)([A-Za-z_][A-Za-z0-9_]*)",
     re.M)
-SWIFT_IMPORT_RE = re.compile(
-    r"^[ \t]*(?:@testable[ \t]+)?import[ \t]+"
-    r"(?:(?:class|struct|enum|protocol|actor|typealias|func|var|let)[ \t]+)?"
-    r"([A-Za-z_][A-Za-z0-9_.]*)", re.M)
 
 
 # Java: `import a.b.C;`, `import a.b.*;`, `import static a.b.C.member;`.
@@ -260,22 +259,45 @@ def _objc_impl_of(known):
     return impl
 
 
-def _resolve_objc(rel, spec, index, impl_of):
-    """`#import "A/B.h"` -> the scanned path ending in `A/B.h`, then its impl."""
+def _resolve_objc(rel, spec, index, impl_of, counts=None):
+    """`#import "A/B.h"` -> the scanned path ending in `A/B.h`, then its impl.
+
+    When the path does not resolve, a basename that exactly one scanned file
+    carries is that file: an Xcode header search path is never named in the
+    import, so `#import "Helpers/Dates.h"` can land on `Signal/Legacy/Dates.h`.
+    Two or more files with that basename leave the import unresolved and are
+    counted: guessing between them would invent an edge.
+    """
     spec = spec.strip()
     if not spec:
         return None
-    candidates = []
-    if spec.startswith("."):
-        candidates.append(posixpath.normpath(
-            posixpath.join(posixpath.dirname(rel), spec)))
-    candidates.append(posixpath.normpath(spec))
-    for candidate in candidates:
-        if candidate.startswith("../"):
-            continue
-        hit = _suffix_lookup(index, candidate)
-        if hit:
-            return impl_of.get(hit, hit)
+    counted = counts is not None
+
+    def _hit(path):
+        hit = _suffix_lookup(index, path)
+        return impl_of.get(hit, hit) if hit else None
+
+    local = posixpath.normpath(posixpath.join(posixpath.dirname(rel), spec))
+    if not local.startswith("../"):
+        target = _hit(local)
+        if target:
+            return target
+
+    # A bare basename is not a path: step 3 is the only honest reading of it.
+    if "/" in spec:
+        normalised = posixpath.normpath(spec)
+        if not normalised.startswith("../"):
+            target = _hit(normalised)
+            if target:
+                return target
+
+    hits = index.get(posixpath.basename(spec)) or []
+    if len(hits) == 1:
+        if counted:
+            counts["basename_fallbacks"] += 1
+        return impl_of.get(hits[0], hits[0])
+    if len(hits) > 1 and counted:
+        counts["ambiguous"] += 1
     return None
 
 
@@ -315,18 +337,17 @@ def _identifiers(text):
     return {match.group(0) for match in re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", text)}
 
 
-def _swift_edges(rel, text, peers, declared, module_files):
-    """Edges for one Swift file: same-target type mentions, then module imports.
+def _swift_edges(rel, text, peers, declared):
+    """Edges for one Swift file: same-target type mentions only.
 
     `peers` is the set of scanned Swift files compiled into the same target.
     Membership is the only thing that makes two files neighbours; without a
     project file nothing is adjacent, which is why the caller reports it.
-    `declared` maps a type name to the files declaring it, `module_files` maps a
-    module name to the files of the target whose product it is.
+    `declared` maps a type name to the files declaring it. `import Module`
+    contributes nothing: it names a module, not a file.
     """
     edges = set()
     mentions = 0
-    modules = 0
     body = _strip_comments(text)
     if peers:
         for name in _identifiers(body):
@@ -334,13 +355,7 @@ def _swift_edges(rel, text, peers, declared, module_files):
                 if peer != rel and peer in peers and peer not in edges:
                     edges.add(peer)
                     mentions += 1
-    for match in SWIFT_IMPORT_RE.finditer(body):
-        module = match.group(1).split(".")[0]
-        for peer in module_files.get(module, ()):
-            if peer != rel and peer not in edges:
-                edges.add(peer)
-                modules += 1
-    return edges, mentions, modules
+    return edges, mentions
 
 
 def build_graph(files, aliases=None, meta=None):
@@ -362,12 +377,11 @@ def build_graph(files, aliases=None, meta=None):
     jvm_peers = None
     objc_index = None
     objc_impl = None
+    objc_counts = None
     swift = None
     swift_declared = None
     swift_peers = None
-    swift_modules = None
     swift_mention_edges = 0
-    swift_module_edges = 0
 
     for f in sources:
         rel = f["rel"]
@@ -414,10 +428,17 @@ def build_graph(files, aliases=None, meta=None):
             if objc_index is None:
                 objc_index = _objc_index(known)
                 objc_impl = _objc_impl_of(known)
+                objc_counts = {"imports": 0, "resolved": 0,
+                               "basename_fallbacks": 0, "ambiguous": 0}
             for match in OBJC_IMPORT_RE.finditer(text):
-                target = _resolve_objc(rel, match.group(1), objc_index, objc_impl)
+                objc_counts["imports"] += 1
+                target = _resolve_objc(rel, match.group(1), objc_index, objc_impl,
+                                       objc_counts)
+                if not target:
+                    continue
+                objc_counts["resolved"] += 1
                 # A header with no implementation is not a node; nothing to lift.
-                if target and target != rel and target in graph:
+                if target != rel and target in graph:
                     graph[rel].add(target)
         elif f["ext"] in SWIFT_EXTS:
             if swift is None:
@@ -434,24 +455,16 @@ def build_graph(files, aliases=None, meta=None):
                     members = [member for member in compiled if member in known]
                     for member in members:
                         swift_peers.setdefault(member, set()).update(members)
-                swift_modules = {}
-                for module, targets in swift["products"].items():
-                    for target in targets:
-                        for member in swift["targets"].get(target, ()):
-                            if member in known:
-                                swift_modules.setdefault(module, []).append(member)
-            edges, mentions, modules = _swift_edges(
-                rel, text, swift_peers.get(rel, set()), swift_declared, swift_modules)
+            edges, mentions = _swift_edges(
+                rel, text, swift_peers.get(rel, set()), swift_declared)
             swift_mention_edges += mentions
-            swift_module_edges += modules
             graph[rel].update(target for target in edges if target in graph)
 
     if meta is not None and swift is not None:
         mapped = len(swift_peers)
         note = None
         if not swift["pbxproj"]:
-            note = ("no project.pbxproj found: Swift files get no intra-target edges, "
-                    "only module imports can connect them")
+            note = ("no project.pbxproj found: Swift files get no intra-target edges")
         elif not mapped:
             note = ("project.pbxproj found but no scanned Swift file is listed in a "
                     "target: no intra-target edges")
@@ -461,9 +474,12 @@ def build_graph(files, aliases=None, meta=None):
             "mapped_files": mapped,
             "targets": sorted(swift["targets"]),
             "mention_edges": swift_mention_edges,
-            "module_edges": swift_module_edges,
+            "module_edges": 0,
+            "module_edge_rule": "dropped",
             "note": note,
         }
+    if meta is not None and objc_counts is not None:
+        meta["objc"] = dict(objc_counts)
 
     return graph
 

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Entrypoints come only from a language that carries the repo. A language must
+  hold at least 5% of the supported non-blank lines for its entrypoints to
+  count; below that they are ignored and named in a gate warning. Before this,
+  Signal-iOS passed the gate on 39 CLI entrypoints from 22 bundled Python files
+  while 705k lines of Swift supplied none. If the filter leaves nothing, the
+  gate refuses and says every entrypoint came from a language under the floor.
+  A `package.json` `bin` names no lines of its own, so the share test does not
+  apply to manifest entrypoints. No repo is special-cased.
+- `import Module` is no longer a Swift edge. Matching a module import to that
+  target's files produced 1,693,481 edges on Signal-iOS — 97% of the graph —
+  and carried no information about which file calls which. Same-target type
+  mentions (57,924 edges) and Objective-C `#import` remain. `reach_meta.swift`
+  now reports `module_edges: 0` and `module_edge_rule: "dropped"`.
+- An Objective-C `#import` whose path does not resolve now takes a basename
+  that exactly one scanned file carries; two or more files with that basename
+  leave it unresolved. Fallbacks and ambiguities are counted in
+  `reach_meta.objc`. Measured on Signal-iOS: +88 resolutions, 0 ambiguous.
+- Swift and Objective-C have entrypoints: `@main`, `@UIApplicationMain`, and
+  `UIApplicationMain(` seed `ui`/5 as `MAIN`; conformance to
+  `UIApplicationDelegate`, `AppDelegate`, or `SceneDelegate` seeds `app`/3 as
+  `APPDELEGATE Class`; `UIViewController`/`UIView` subclasses, directly or
+  through four hops of project bases, seed `ui`/5 as `VIEWCONTROLLER Class`.
+  ObjC `@interface X : UIViewController` seeds the scanned implementation.
+  `@IBAction` handlers are not seeded separately: the controller already covers
+  the file.
+
 - Swift and Objective-C are languages the tool knows. `.swift` and `.m`/`.mm`
   count as supported code; a header does not. `.h` is an import target only, so
   it is never a graph node and never a counted line — counting it would double
@@ -18,15 +44,9 @@
   synchronised root groups (empty Sources phase, folder compiled wholesale,
   membership exceptions honoured). Two Swift files are neighbours only when
   they are in the same target *and* the importer names a type the other
-  declares; `import Foo` adds an edge to Foo's target when Foo is a product.
-  With no project file the run reports that it has no intra-target edges rather
-  than guessing. Entrypoints and defect rules for Swift and Objective-C are not
-  implemented yet, so on Signal-iOS the graph resolves 2,698 of 2,720 Swift
-  files into 8 targets and 57,924 mention edges, while the only seeds the
-  extractor finds are 39 CLI entries in the bundled Python tooling: 3,879 files
-  stay at reach 1 and `import SignalServiceKit` alone adds 1.48M edges. Seeding
-  Swift and Objective-C is the next step, and module imports need narrowing at
-  the same time.
+  declares. With no project file the run reports that it has no intra-target
+  edges rather than guessing. On Signal-iOS the graph resolves 2,698 of 2,720
+  Swift files into 8 targets and 57,924 mention edges.
 - `consume(` is narrowed to a queue signal. It counts only when the receiver
   names `consumer`, `queue`, or `subscription`, or the line contains `topic`,
   `queueName`, or `partition`. On Signal-Android all 27 remaining consumer

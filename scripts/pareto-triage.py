@@ -14,7 +14,8 @@ from pathlib import Path
 from lib.walk import walk, count_loc
 from lib.lang import (SUPPORTED_LABEL, frameworks, languages, read_manifests,
                       split_supported, test_runner)
-from lib.entry import extract_entrypoints, entrypoint_counts
+from lib.entry import (extract_entrypoints, entrypoint_counts,
+                       filter_entrypoints_by_language, ENTRY_LANGUAGE_FLOOR)
 from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
 from lib.rules import detect_defects
 from lib.imports import compute_reach, entry_paths, read_aliases, seeds_from_entrypoints
@@ -184,13 +185,18 @@ def _dedupe_findings(findings):
 def _print_swift_notes(reach_meta):
     """Say what the Swift graph actually knows, instead of leaving it implied."""
     swift = reach_meta.get("swift")
-    if not swift or not swift.get("swift_files"):
-        return
-    print("swift      %d file(s), %d mapped to a target, %d mention edge(s), %d module edge(s)"
-          % (swift["swift_files"], swift["mapped_files"], swift["mention_edges"],
-             swift["module_edges"]))
-    if swift.get("note"):
-        print("           %s" % swift["note"])
+    if swift and swift.get("swift_files"):
+        print("swift      %d file(s), %d mapped to a target, %d mention edge(s); "
+              "module imports add no edge"
+              % (swift["swift_files"], swift["mapped_files"], swift["mention_edges"]))
+        if swift.get("note"):
+            print("           %s" % swift["note"])
+    objc = reach_meta.get("objc")
+    if objc and objc.get("imports"):
+        print("objc       %d #import(s), %d resolved, %d by unique basename, "
+              "%d ambiguous (not resolved)"
+              % (objc["imports"], objc["resolved"], objc["basename_fallbacks"],
+                 objc["ambiguous"]))
 
 
 def _stale_reasons(ranked, out_dir, files):
@@ -249,6 +255,14 @@ def print_gate(scope):
               % (scope["gate"]["confidence_cap"], scope["gate"]["confidence_cap_reason"]))
 
 
+def _ignored_languages(ignored):
+    """`python (39 entrypoints, 0.3% of supported lines)` for warnings."""
+    return ", ".join("%s (%s entrypoint%s, %.1f%% of supported lines)"
+                     % (entry["lang"], num(entry["entrypoints"]),
+                        "" if entry["entrypoints"] == 1 else "s", 100 * entry["share"])
+                     for entry in ignored)
+
+
 def cmd_gate(positional, flags):
     repo, out_dir = _paths(positional, flags)
     raw_min = flags.get("min-loc", MIN_LOC_DEFAULT)
@@ -275,6 +289,7 @@ def cmd_gate(positional, flags):
     fw = frameworks(manifests)
     tests = test_runner(manifests, files)
     entrypoints = extract_entrypoints(files)
+    entrypoints, ignored_languages = filter_entrypoints_by_language(entrypoints, supported)
     counts = entrypoint_counts(entrypoints)
 
     reasons = []
@@ -286,12 +301,20 @@ def cmd_gate(positional, flags):
             "only %s non-blank lines of supported code; minimum is %s — too few findings to rank honestly"
             % (num(supported_loc), num(min_loc)))
     if not entrypoints:
-        reasons.append("no entrypoints detected (routes, CLI commands, cron jobs, consumers, "
-                       "Android components); reachability would be invented")
+        if ignored_languages:
+            reasons.append(
+                "every detected entrypoint comes from a language below the 5%% floor: %s; "
+                "reachability would be invented" % _ignored_languages(ignored_languages))
+        else:
+            reasons.append("no entrypoints detected (routes, CLI commands, cron jobs, consumers, "
+                           "Android components, iOS app/UI classes); reachability would be invented")
     if walked["truncated"]:
         reasons.append("file cap reached — scan is incomplete")
 
     warnings = []
+    if ignored_languages:
+        warnings.append("entrypoints ignored from languages below the %.0f%% floor: %s"
+                        % (100 * ENTRY_LANGUAGE_FLOOR, _ignored_languages(ignored_languages)))
     if not tests["present"]:
         warnings.append("no test runner detected: confidence capped at med, verification unavailable")
     if unsupported:
@@ -311,6 +334,7 @@ def cmd_gate(positional, flags):
             "ok": not reasons,
             "reasons": reasons,
             "min_loc": min_loc,
+            "entrypoint_language_floor": ENTRY_LANGUAGE_FLOOR,
             "confidence_cap": None if tests["present"] else "med",
             "confidence_cap_reason": None if tests["present"] else "no test runner detected",
         },
@@ -330,6 +354,7 @@ def cmd_gate(positional, flags):
         "tests": tests,
         "entrypoint_kinds": counts,
         "entrypoints": entrypoints,
+        "entrypoints_ignored": ignored_languages,
         "skipped": walked["skipped"][:200],
         "warnings": warnings,
     }

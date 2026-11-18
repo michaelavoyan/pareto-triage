@@ -61,7 +61,9 @@ The judgement calls — missing timeouts, swallowed errors, no idempotency — g
 
 Java and Kotlin are scanned for entrypoints, reachability, and defects. Five JVM rules cover command injection (`Runtime.exec` or `ProcessBuilder` with concatenation), SQL built by concatenation, empty `catch`, `MessageDigest` with MD5 or SHA-1, and `new ObjectInputStream`. The secret rules run on `.java`, `.kt`, and `.kts` too.
 
-Swift and Objective-C are recognized and placed on the import graph: `#import` resolves header paths against the scanned tree, and Swift target membership comes from `project.pbxproj`, so a same-target type mention is an edge. Their entrypoints and defect rules are not implemented yet, so a Swift or Objective-C repo still fails the gate on entrypoints rather than producing a report.
+Swift and Objective-C are recognized and placed on the import graph: `#import` resolves header paths against the scanned tree, falling back to a basename only when exactly one scanned file carries it, and Swift target membership comes from `project.pbxproj`, so a same-target type mention is an edge. `import Module` is not an edge: it names a module, not a file, and it produced 97% of the graph on Signal-iOS while carrying no call information. Their entrypoints are `@main`/`@UIApplicationMain`/`UIApplicationMain(`, app delegates, and `UIViewController`/`UIView` subclasses through four hops of project bases, including ObjC `@interface` declarations. Defect rules for Swift and Objective-C are not implemented yet.
+
+An entrypoint only counts when its language holds at least 5% of the supported lines. A repo whose seeds all come from a bundled helper language is refused, with the language named, rather than ranked on reachability that describes the tooling instead of the app.
 
 The maths never reaches the model. Two people running the same commands get the same ranking.
 

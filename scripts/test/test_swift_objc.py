@@ -16,12 +16,15 @@ FIXTURES = SCRIPTS.parent / "fixtures"
 
 sys.path.insert(0, str(SCRIPTS))
 from lib import xcode  # noqa: E402
-from lib.imports import build_graph, compute_reach  # noqa: E402
+from lib.entry import extract_entrypoints, entrypoint_counts  # noqa: E402
+from lib.imports import (SEED_BY_KIND, build_graph, compute_reach,  # noqa: E402
+                         seeds_from_entrypoints)
 from lib.lang import EXT_LANG, SUPPORTED, SUPPORTED_LABEL  # noqa: E402
 from lib.walk import count_loc, walk  # noqa: E402
 
 SWIFT = "swift-app"
 OBJC = "objc-app"
+IOS = "ios-app"
 PBXPROJ = "App.xcodeproj/project.pbxproj"
 APP_MAIN = "App/AppMain.swift"
 HELPERS = "App/Helpers.swift"
@@ -104,18 +107,39 @@ class ObjcImportTests(unittest.TestCase):
         ]
         self.assertEqual(build_graph(files)["Signal/A.m"], set())
 
-    def test_duplicate_basenames_pick_the_shallower_path_every_time(self):
+    def test_duplicate_basenames_from_another_directory_stay_unresolved(self):
         files = [
-            source("App/Uses.m", '#import "Shared.h"\n'),
+            source("Other/Uses.m", '#import "Shared.h"\n'),
             source("App/Shared.h", "@interface Shared : NSObject\n@end\n"),
             source("App/Shared.m", '#import "Shared.h"\n'),
             source("App/Deep/Nest/Shared.h", "@interface Shared : NSObject\n@end\n"),
             source("App/Deep/Nest/Shared.m", '#import "Shared.h"\n'),
         ]
-        first = build_graph(files)["App/Uses.m"]
-        second = build_graph(files)["App/Uses.m"]
-        self.assertEqual(first, {"App/Shared.m"})
-        self.assertEqual(first, second)
+        meta = {}
+        graph = build_graph(files, meta=meta)
+        self.assertEqual(graph["Other/Uses.m"], set())
+        self.assertEqual(meta["objc"]["ambiguous"], 1)
+        self.assertEqual(build_graph(files)["Other/Uses.m"], set())
+
+    def test_a_directory_path_that_does_not_match_still_takes_a_unique_basename(self):
+        hits = build_graph(self.files)["Signal/Orders/Recent.m"]
+        self.assertEqual(hits, {"Signal/Legacy/Dates.m"})
+
+    def test_basename_fallbacks_and_ambiguity_are_counted_in_reach_meta(self):
+        meta = {}
+        build_graph(self.files, meta=meta)
+        self.assertEqual(meta["objc"]["basename_fallbacks"], 1)
+        self.assertEqual(meta["objc"]["ambiguous"], 1)
+
+    def test_a_unique_basename_with_no_implementation_resolves_to_the_header(self):
+        files = [
+            source("App/Uses.m", '#import "Only/Declared.h"\n'),
+            source("App/Declared.h", "@interface Declared : NSObject\n@end\n"),
+        ]
+        meta = {}
+        build_graph(files, meta=meta)
+        self.assertEqual(meta["objc"]["resolved"], 1)
+        self.assertEqual(meta["objc"]["basename_fallbacks"], 1)
 
     def test_relative_import_is_normalised_from_the_importing_directory(self):
         files = [
@@ -171,8 +195,8 @@ class SwiftTargetTests(unittest.TestCase):
     def test_an_unmapped_file_gets_no_edges(self):
         self.assertEqual(self.graph[ORPHAN], set())
 
-    def test_a_module_import_maps_to_that_targets_files(self):
-        self.assertEqual(self.graph[IMPORTER], {CORE_STORE})
+    def test_a_module_import_creates_no_edge(self):
+        self.assertEqual(self.graph[IMPORTER], set())
 
     def test_an_import_of_a_module_that_is_not_a_target_is_ignored(self):
         files = [
@@ -215,7 +239,8 @@ class SwiftTargetTests(unittest.TestCase):
         self.assertEqual(swift["swift_files"], 6)
         self.assertEqual(swift["mapped_files"], 5)
         self.assertEqual(swift["mention_edges"], 1)
-        self.assertEqual(swift["module_edges"], 1)
+        self.assertEqual(swift["module_edges"], 0)
+        self.assertEqual(swift["module_edge_rule"], "dropped")
         self.assertIsNone(swift["note"])
 
     def test_without_a_project_file_the_graph_says_so_instead_of_guessing(self):
@@ -232,7 +257,7 @@ class SwiftTargetTests(unittest.TestCase):
 
     def test_reach_meta_from_compute_reach_carries_the_swift_section(self):
         reach, meta = compute_reach(self.files, [], seeds={IMPORTER: 5}, max_depth=3)
-        self.assertEqual(reach(CORE_STORE), 4)
+        self.assertEqual(reach(CORE_STORE), 1)  # a module import is not an edge
         self.assertEqual(reach(ORPHAN), 1)
         self.assertEqual(meta["swift"]["pbxproj"], [PBXPROJ])
 
@@ -298,10 +323,11 @@ class SwiftGateTests(unittest.TestCase):
             result = run(["gate", repo, "--min-loc", "1", "--out", out])
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             scope = json.loads((out / "scope.json").read_text())
-        self.assertEqual(scope["languages"]["supported"], ["swift", "objc"])
+        self.assertEqual(sorted(scope["languages"]["supported"]), ["objc", "swift"])
         self.assertEqual(scope["gate"]["reasons"],
                          ["no entrypoints detected (routes, CLI commands, cron jobs, "
-                          "consumers, Android components); reachability would be invented"])
+                          "consumers, Android components, iOS app/UI classes); "
+                          "reachability would be invented"])
 
     def test_both_documented_gate_reasons_are_reachable_on_a_mixed_tree(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -328,6 +354,144 @@ class SwiftGateTests(unittest.TestCase):
         sizes = {entry["lang"]: entry for entry in scope["size"]["by_language"]}
         self.assertEqual(sorted(sizes), ["objc", "swift"])
         self.assertEqual(scope["size"]["loc"], sizes["swift"]["loc"] + sizes["objc"]["loc"])
+
+
+class IosEntrypointTests(unittest.TestCase):
+    """Swift and Objective-C entrypoints, through the Android chain walker."""
+
+    APP_MAIN = "Signal/AppMain.swift"
+    APP_DELEGATE = "Signal/AppDelegate.swift"
+    SCENE_DELEGATE = "Signal/WindowSceneDelegate.swift"
+    UIKIT_MAIN = "Signal/Main.swift"
+    BASE_CONTROLLER = "Signal/BaseViewController.swift"
+    CONVERSATION = "Signal/ConversationViewController.swift"
+    FEED_VIEW = "Signal/FeedView.swift"
+    PLAIN = "Signal/PlainModel.swift"
+    OBJC_CONTROLLER = "Signal/ObjC/AccountsViewController.m"
+    OBJC_DELEGATE = "Signal/ObjC/LegacyAppDelegate.m"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.files = fixture_files(IOS)
+        cls.entries = extract_entrypoints(cls.files)
+        cls.seeds = seeds_from_entrypoints(cls.entries)
+
+    def one(self, rel):
+        found = [e for e in self.entries if e["file"] == rel]
+        self.assertEqual(len(found), 1, (rel, found))
+        return found[0]
+
+    def test_main_attribute_is_ui_with_seed_five(self):
+        entry = self.one(self.APP_MAIN)
+        self.assertEqual((entry["kind"], entry["detail"]), ("ui", "MAIN"))
+        self.assertEqual(self.seeds[self.APP_MAIN], 5)
+        self.assertEqual(SEED_BY_KIND["ui"], 5)
+
+    def test_ui_application_main_call_is_ui_with_seed_five(self):
+        entry = self.one(self.UIKIT_MAIN)
+        self.assertEqual((entry["kind"], entry["detail"]), ("ui", "MAIN"))
+        self.assertEqual(self.seeds[self.UIKIT_MAIN], 5)
+
+    def test_app_delegate_conformance_is_app_with_seed_three(self):
+        entry = self.one(self.APP_DELEGATE)
+        self.assertEqual((entry["kind"], entry["detail"]),
+                         ("app", "APPDELEGATE AppDelegate"))
+        self.assertEqual(self.seeds[self.APP_DELEGATE], 3)
+        self.assertEqual(SEED_BY_KIND["app"], 3)
+
+    def test_scene_delegate_conformance_is_app_with_seed_three(self):
+        entry = self.one(self.SCENE_DELEGATE)
+        self.assertEqual((entry["kind"], entry["detail"]),
+                         ("app", "APPDELEGATE WindowSceneDelegate"))
+        self.assertEqual(self.seeds[self.SCENE_DELEGATE], 3)
+
+    def test_a_view_controller_subclass_is_ui_with_seed_five(self):
+        entry = self.one(self.BASE_CONTROLLER)
+        self.assertEqual((entry["kind"], entry["detail"]),
+                         ("ui", "VIEWCONTROLLER BaseViewController"))
+        self.assertEqual(self.seeds[self.BASE_CONTROLLER], 5)
+
+    def test_a_view_controller_subclass_is_seeded_through_a_project_base(self):
+        entry = self.one(self.CONVERSATION)
+        self.assertEqual((entry["kind"], entry["detail"]),
+                         ("ui", "VIEWCONTROLLER ConversationViewController"))
+        self.assertEqual(self.seeds[self.CONVERSATION], 5)
+
+    def test_a_view_subclass_is_ui_with_seed_five(self):
+        entry = self.one(self.FEED_VIEW)
+        self.assertEqual((entry["kind"], entry["detail"]),
+                         ("ui", "VIEWCONTROLLER FeedView"))
+        self.assertEqual(self.seeds[self.FEED_VIEW], 5)
+
+    def test_an_objc_view_controller_seeds_its_implementation(self):
+        entry = self.one(self.OBJC_CONTROLLER)
+        self.assertEqual((entry["kind"], entry["detail"]),
+                         ("ui", "VIEWCONTROLLER AccountsViewController"))
+        self.assertEqual(self.seeds[self.OBJC_CONTROLLER], 5)
+
+    def test_an_objc_delegate_seeds_its_implementation(self):
+        entry = self.one(self.OBJC_DELEGATE)
+        self.assertEqual((entry["kind"], entry["detail"]),
+                         ("app", "APPDELEGATE LegacyAppDelegate"))
+        self.assertEqual(self.seeds[self.OBJC_DELEGATE], 3)
+
+    def test_a_plain_swift_struct_is_not_seeded(self):
+        self.assertEqual([e for e in self.entries if e["file"] == self.PLAIN], [])
+        self.assertNotIn(self.PLAIN, self.seeds)
+
+    def test_an_ibaction_handler_is_not_seeded_separately(self):
+        entries = extract_entrypoints([
+            source("App/FeedViewController.swift",
+                   "import UIKit\n"
+                   "final class FeedViewController: UIViewController {\n"
+                   "    @IBAction func refresh(_ sender: Any) {}\n"
+                   "    @IBAction func close(_ sender: Any) {}\n"
+                   "}\n")])
+        self.assertEqual([(e["kind"], e["detail"]) for e in entries],
+                         [("ui", "VIEWCONTROLLER FeedViewController")])
+
+    def test_delegate_conformance_is_not_inherited_from_a_project_base(self):
+        entries = extract_entrypoints([
+            source("App/BaseAppDelegate.swift",
+                   "import UIKit\n"
+                   "class BaseAppDelegate: UIResponder, UIApplicationDelegate {}\n"),
+            source("App/ChildDelegate.swift",
+                   "import UIKit\n"
+                   "final class ChildDelegate: BaseAppDelegate {}\n")])
+        by_file = {e["file"]: e for e in entries}
+        self.assertEqual(by_file["App/BaseAppDelegate.swift"]["kind"], "app")
+        self.assertNotIn("App/ChildDelegate.swift", by_file)
+
+    def test_the_chain_walk_stops_after_four_hops(self):
+        entries = extract_entrypoints([
+            source("App/Leaf.swift", "import UIKit\nfinal class Leaf: Hop1 {}\n"),
+            source("App/Hop1.swift", "import UIKit\nclass Hop1: Hop2 {}\n"),
+            source("App/Hop2.swift", "import UIKit\nclass Hop2: Hop3 {}\n"),
+            source("App/Hop3.swift", "import UIKit\nclass Hop3: Hop4 {}\n"),
+            source("App/Hop4.swift", "import UIKit\nclass Hop4: UIViewController {}\n"),
+        ])
+        seeded = {e["file"] for e in entries}
+        self.assertIn("App/Hop1.swift", seeded)     # four edges from Hop1
+        self.assertNotIn("App/Leaf.swift", seeded)  # a fifth edge is not followed
+
+    def test_counts_and_seeds_cover_the_ios_kinds(self):
+        counts = entrypoint_counts(self.entries)
+        self.assertEqual(counts["ui"], 6)
+        self.assertEqual(counts["app"], 3)
+        self.assertEqual(counts["http"], 0)
+
+
+class IosGateTests(unittest.TestCase):
+    def test_ios_entrypoints_are_enough_for_the_gate_to_pass(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            result = run(["gate", FIXTURES / IOS, "--min-loc", "1", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            scope = json.loads((Path(out) / "scope.json").read_text())
+        self.assertTrue(scope["gate"]["ok"])
+        self.assertEqual(scope["entrypoint_kinds"]["ui"], 6)
+        self.assertEqual(scope["entrypoint_kinds"]["app"], 3)
+        self.assertEqual(scope["entrypoints_ignored"], [])
 
 
 PROJECT = """// !$*UTF8*$!

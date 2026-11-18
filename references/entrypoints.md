@@ -8,15 +8,25 @@
 |---|---|---|
 | HTTP route | framework-specific patterns below, including Django `include(`, Spring `@GetMapping`, JAX-RS `@GET` | 5 |
 | Android UI | a class extending `Activity`, `AppCompatActivity`, `ComponentActivity`, `FragmentActivity`, or `Fragment`, directly or through a project base (up to four hops) | 5 |
+| iOS UI | `@main`, `@UIApplicationMain`, or `UIApplicationMain(`; a `UIViewController` or `UIView` subclass, directly or through a project base (up to four hops); ObjC `@interface X : UIViewController` | 5 |
 | Middleware | `app.use('<path>', …)` — on the request path, not a route | 4 |
 | Android background | a class extending `Service`, `IntentService`, `JobService`, `Worker`, `BroadcastReceiver`, or `ContentProvider`, directly or through a project base | 4 |
 | Queue consumer | `.consume(` only when the receiver or the line names a queue, plus `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
 | Cron / scheduled | `cron.schedule`, `setInterval`, `@scheduled`, `schedule.every` | 4 |
 | CLI command | `package.json` `bin`, `#!/usr/bin/env node`, `if __name__ == "__main__"`, argparse/click/typer, `public static void main(`, `fun main(` | 3 |
+| iOS application | a class conforming to `UIApplicationDelegate`, `AppDelegate`, or `SceneDelegate`; ObjC `@interface X : NSObject <UIApplicationDelegate>` | 3 |
 | Android application | a class extending `Application`, directly or through a project base | 3 |
 | Public API | an `export` or `__all__` in `index.{ts,js}`, `index.tsx`, or `__init__.py` | 3 |
 
 A file that is several things gets the best seed. Each import hop costs one level, down to a floor of 2.
+
+## The entrypoint language has to carry the repo
+
+An entrypoint counts only when its language holds at least **5% of the supported non-blank lines**. Below that, the entrypoints are ignored and the gate names the language in a warning; if nothing survives, the gate refuses rather than deriving reachability from a helper language.
+
+The measurement is per repo and applies to every repo. Signal-iOS is the case that motivated it: 22 bundled Python files supplied 39 CLI entrypoints beside 705k lines of Swift that supplied none, so the gate passed on tooling while saying nothing about the app.
+
+An entrypoint on a file with no source language — a `package.json` `bin`, which names a script rather than holding one — is not judged by share: it has no lines of its own to weigh. `scope.json` records the kept entrypoints in `entrypoints`, the ignored languages in `entrypoints_ignored`, and the floor in `gate.entrypoint_language_floor`.
 
 ## Framework patterns (v1)
 
@@ -33,6 +43,8 @@ Android      Java `extends` / Kotlin `:` against a component base name:
              Activity · AppCompatActivity · ComponentActivity · FragmentActivity · Fragment
              Service · IntentService · JobService · Worker · BroadcastReceiver · ContentProvider
              Application
+iOS          `@main` · `@UIApplicationMain` · `UIApplicationMain(` · `UIApplicationDelegate`
+             `AppDelegate` · `SceneDelegate` · `UIViewController` · `UIView`
 ```
 
 Adding a framework is one regex family plus one fixture. Do not add a framework without a fixture that proves the extraction works.
@@ -48,6 +60,18 @@ Only these exact base names match directly. A class that reaches one through a p
 An ancestor that is neither a component base nor a declaration in the scanned set is a dead branch: the class is **not** seeded. The extractor never guesses a base from its name, so a dependency class outside the repo, a generated base with no scanned source, and a typo all stay unseeded rather than inventing a root. A class named `Activity` in some other framework is indistinguishable and would be seeded: base names are checked, not imports.
 
 Measured on Signal-Android (9,982 files, 819,290 non-blank lines): before following project bases the scan finds 73 `ui`, 53 `background` (38 receivers, 14 services, one provider), and 6 `app`. With the four-hop chain it finds 299 `ui`, 69 `background` (46 receivers, 19 services, four providers), and 10 `app` — 246 more components, which matches the ~248 counted by hand. `ComposeFragment` alone accounts for 95 UI classes. The seed count is still a floor — a base class declared outside the scanned set, or a chain longer than four hops, stays out — and the report says so.
+
+### iOS components
+
+Swift and Objective-C reuse the same type table and four-hop chain walker as Android. The framework instantiates these too, so a file that holds one is an entrypoint by declaration.
+
+- `@main`, `@UIApplicationMain`, and the `UIApplicationMain(…)` call are the process entry: `ui`, seed 5, detail `MAIN`.
+- A class conforming to `UIApplicationDelegate`, `AppDelegate`, or `SceneDelegate` is `app`, seed 3, detail `APPDELEGATE AppDelegate`. Conformance is read from the class's own declaration only; Swift does not inherit it, so a subclass of a project delegate is not a delegate.
+- A `UIViewController` or `UIView` subclass is `ui`, seed 5, detail `VIEWCONTROLLER ConversationViewController`. The walker crosses project base classes, so `ConversationViewController -> BaseViewController -> UIViewController` is seeded and the detail still names the class that is the entrypoint.
+- ObjC `@interface AccountsViewController : UIViewController` and `@interface AppDelegate : NSObject <UIApplicationDelegate>` are read from the declaration and seed the scanned `.m`/`.mm`. A header with no implementation has no body to rank and is not seeded.
+- `@IBAction` handlers are not seeded separately. The controller already covers the file; seeding each handler would multiply one file's seeds and add no reach.
+
+A plain `struct`, a `class` with no framework base, and a class whose chain ends at an unscanned name are not seeded. A `class` declaration in a comment is stripped before parsing, and line numbers survive block comments.
 
 ## Removed: plain `.subscribe(`
 
@@ -76,9 +100,9 @@ Anything less specific is not a seed. A false seed is worse than a missing one: 
 ## Call graph and reach
 
 ```
-reach = 5  the file registers a route, is an Android UI component, or is included
+reach = 5  the file registers a route, is an Android UI component or iOS view controller, or is included
 reach = 4  middleware, cron, consumer, or Android background component
-reach = 3  CLI entrypoint, package export, or Android Application subclass
+reach = 3  CLI entrypoint, package export, Android Application subclass, or iOS app delegate
 reach = 2  imported within depth 3 of any seed, floor
 reach = 1  present in the repo, no path from any entrypoint
 reach = 0  in the repo but unreadable (binary, oversized, non-utf-8)
@@ -94,9 +118,12 @@ A specifier resolves in this order: a relative path (`./x`, `../y`); a `paths` a
 
 Java and Kotlin resolve dotted imports against the scanned files. The source root (`src/main/java`, `src/main/kotlin`, `app/src/main/java`) is never named by the import, so `com.acme.Foo` matches any scanned path ending in `com/acme/Foo.java`; two roots providing the same suffix resolve to the shallower path, then the lexicographically first. `import com.acme.Foo` in Kotlin tries `Foo.kt`, `foo.kt`, then `Foo.java`, because a lowercase file can hold a top-level declaration imported by name and mixed projects exist. Wildcard and star imports name no file and add no edge. A Java `import static a.b.C.member` resolves to `C.java` by trimming trailing segments. Java classes in the same directory are the same package, so a peer is an edge only when its type name appears in the importing file; visibility alone would lift every class in a large package. Kotlin has the same implicit package visibility and it is not modelled. A `package` declaration that disagrees with the directory, and every external jar and JDK import, stays unresolved.
 
-Objective-C `#import "A/B.h"` and `#import <A/B.h>` resolve against the scanned files the same way: the header search path the import assumes is never named, so any scanned path ending in `A/B.h` matches, a bare `"B.h"` matches by basename, and ties pick the shallower path then the lexicographically first. An import that starts with `.` is normalised from the importing file's directory first. A header and its implementation are one logical file: an edge that lands on `X.h` is recorded against `X.m` or `X.mm`, so the two files are not counted separately and an implementation importing its own header adds no edge. Headers are import targets, not code: they are never graph nodes and their lines are never counted as supported code. A header with no implementation, and every `#import <Foundation/Foundation.h>`-style system import, resolves to nothing.
+Objective-C `#import "A/B.h"` and `#import <A/B.h>` resolve against the scanned files the same way: the header search path the import assumes is never named, so any scanned path ending in `A/B.h` matches, and an edge that lands on `X.h` is recorded against `X.m` or `X.mm`, so the two files are not counted separately and an implementation importing its own header adds no edge. An import that starts with `.` is normalised from the importing file's directory first. When the path still does not resolve, a basename that exactly one scanned file carries is that file — `#import "Helpers/Dates.h"` lands on `Signal/Legacy/Dates.h` when it is the only `Dates.h` in the tree. Two or more files with that basename leave the import unresolved and increment `reach_meta.objc.ambiguous`; guessing between them would invent an edge. `reach_meta.objc` also counts resolved imports and basename fallbacks. Headers are import targets, not code: they are never graph nodes and their lines are never counted as supported code. A header with no implementation, and every `#import <Foundation/Foundation.h>`-style system import, resolves to nothing.
 
-Swift has no file-level imports. A Swift file can call anything in its module, so the module — the Xcode target — is what connects two files. `project.pbxproj` is read from every `*.xcodeproj` in the tree for target membership (`PBXSourcesBuildPhase` → `PBXBuildFile` → `PBXFileReference`, with paths rebuilt through the group tree), and matched to scanned paths by trailing segments. Two Swift files are neighbours only when they are in the same target **and** the importing file names a type the other file declares (`class`, `struct`, `enum`, `protocol`, `actor`, `typealias`); comments are stripped before both steps, so a commented-out declaration or mention counts for neither. `import Foo` names a module: when `Foo` is another target's product it adds an edge to that target's files, and otherwise it is ignored. With no project file there are no intra-target edges, and the run says so in its mode line instead of guessing.
+Swift has no file-level imports. A Swift file can call anything in its module, so the module — the Xcode target — is what connects two files. `project.pbxproj` is read from every `*.xcodeproj` in the tree for target membership (`PBXSourcesBuildPhase` → `PBXBuildFile` → `PBXFileReference`, with paths rebuilt through the group tree), and matched to scanned paths by trailing segments. Two Swift files are neighbours only when they are in the same target **and** the importing file names a type the other file declares (`class`, `struct`, `enum`, `protocol`, `actor`, `typealias`); comments are stripped before both steps, so a commented-out declaration or mention counts for neither.
+
+`import Module` is **not** an edge. It names a module, not a file. Matching it to the target's files produced 1,693,481 edges on Signal-iOS — 97% of the whole graph — while saying nothing about which file calls which; every file in a target became adjacent to every other. The rule is removed. `reach_meta.swift` reports `module_edges: 0` and `module_edge_rule: "dropped"`. With no project file there are no intra-target edges, and the run says so in its mode line instead of guessing.
+
 
 Broken or absent manifests leave the alias set empty, and resolution falls back to relative paths alone. That is degradation, not failure.
 
