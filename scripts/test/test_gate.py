@@ -9,6 +9,9 @@ HERE = Path(__file__).resolve().parent
 CLI = HERE.parent / "pareto-triage.py"
 FIXTURES = HERE.parent.parent / "fixtures"
 
+sys.path.insert(0, str(HERE.parent))
+from lib.entry import filter_entrypoints_by_language  # noqa: E402
+
 
 def run(args):
     return subprocess.run(
@@ -93,6 +96,64 @@ class PythonGateUnchangedTests(unittest.TestCase):
             text = result.stdout.replace(repo, "<root>")
             text = text.replace(str(Path(out).resolve()), "<out>")
         self.assertEqual(text, golden)
+
+
+class EntrypointLanguageGateTests(unittest.TestCase):
+    """A helper language must not supply the seeds for a repo it does not carry."""
+
+    def test_gate_ignores_entrypoints_below_the_language_floor_and_names_the_language(self):
+        with tempfile.TemporaryDirectory() as out:
+            result = run(["gate", FIXTURES / "swift-python", "--min-loc", "1", "--out", out])
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            scope = json.loads((Path(out) / "scope.json").read_text())
+        self.assertFalse(scope["gate"]["ok"])
+        self.assertEqual(scope["entrypoints"], [])
+        self.assertEqual([entry["lang"] for entry in scope["entrypoints_ignored"]], ["python"])
+        self.assertEqual(scope["entrypoints_ignored"][0]["entrypoints"], 2)
+        self.assertLess(scope["entrypoints_ignored"][0]["share"], 0.05)
+        self.assertEqual(scope["gate"]["entrypoint_language_floor"], 0.05)
+        self.assertIn("below the 5% floor", " / ".join(scope["gate"]["reasons"]))
+        warning = next(w for w in scope["warnings"] if "ignored" in w)
+        self.assertIn("python", warning)
+        self.assertIn("5%", warning)
+
+    def test_gate_keeps_entrypoints_when_their_language_carries_the_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            out = Path(tmp) / "out"
+            (repo / "app").mkdir(parents=True)
+            (repo / "app" / "main.py").write_text(
+                "#!/usr/bin/env python3\nimport sys\n\n\n"
+                "def main():\n    print(sys.argv)\n\n\n"
+                "if __name__ == '__main__':\n    main()\n", encoding="utf-8")
+            (repo / "Store.swift").write_text(
+                "import Foundation\n\nstruct Store {\n"
+                + "".join("    func value%d() -> Int { %d }\n" % (i, i) for i in range(12))
+                + "}\n", encoding="utf-8")
+            result = run(["gate", repo, "--min-loc", "1", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            scope = json.loads((out / "scope.json").read_text())
+        self.assertTrue(scope["gate"]["ok"])
+        self.assertEqual(scope["entrypoints_ignored"], [])
+        self.assertTrue(scope["entrypoints"])
+
+    def test_the_floor_is_five_percent_of_supported_lines(self):
+        entries = [{"kind": "cli", "file": "tools/run.py", "line": 1, "detail": "main"}]
+        at_floor = [{"lang": "swift", "files": 1, "loc": 95},
+                    {"lang": "python", "files": 1, "loc": 5}]
+        below = [{"lang": "swift", "files": 1, "loc": 96},
+                 {"lang": "python", "files": 1, "loc": 4}]
+        self.assertEqual(filter_entrypoints_by_language(entries, at_floor), (entries, []))
+        kept, ignored = filter_entrypoints_by_language(entries, below)
+        self.assertEqual(kept, [])
+        self.assertEqual(ignored[0]["lang"], "python")
+
+    def test_a_manifest_entrypoint_is_not_judged_by_line_share(self):
+        entries = [{"kind": "cli", "file": "package.json", "line": 1, "detail": "bin"}]
+        supported = [{"lang": "swift", "files": 1, "loc": 1000}]
+        kept, ignored = filter_entrypoints_by_language(entries, supported)
+        self.assertEqual(kept, entries)
+        self.assertEqual(ignored, [])
 
 
 class ValidateTests(unittest.TestCase):

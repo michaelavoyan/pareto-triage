@@ -4,9 +4,20 @@ import json
 import posixpath
 import re
 
+from .lang import EXT_LANG
+
 JS_EXT = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
 PY_EXT = {".py"}
 JVM_EXT = {".java", ".kt", ".kts"}
+SWIFT_EXT = {".swift"}
+OBJC_EXT = {".m", ".mm"}
+OBJC_HEADER_EXT = {".h"}
+
+# An entrypoint language has to carry the repo. Signal-iOS has 22 bundled Python
+# files (39 CLI entrypoints) beside 705k lines of Swift with no entrypoint at
+# all; the gate passed on the helpers while the app itself contributed nothing.
+# Five percent is a floor, not a claim about any particular repo.
+ENTRY_LANGUAGE_FLOOR = 0.05
 
 def _method_path(m):
     return "%s %s" % (m.group(1).upper(), m.group(3))
@@ -280,18 +291,19 @@ def _pick_declaration(records):
     return min(records, key=lambda d: (d["file"].count("/"), d["file"], d["line"]))
 
 
-def _component_through(supertypes, table, max_hops=ANDROID_MAX_HOPS):
-    """Walk the parsed ancestor chain to an Android component base.
+def _component_through(supertypes, table, components, max_hops=ANDROID_MAX_HOPS):
+    """Walk the parsed ancestor chain to a framework component base.
 
     Direct supertypes are hop 1. A name that is neither a component nor a
     scanned declaration is a dead branch: the chain stays unresolved and the
-    class is not seeded, because a wrong seed outranks a missing one.
+    class is not seeded, because a wrong seed outranks a missing one. The same
+    walk serves Android, Swift, and Objective-C; only `components` differs.
     """
     frontier = sorted(set(supertypes))
     seen = set(frontier)
     for _ in range(max_hops):
         for name in frontier:
-            component = ANDROID_COMPONENTS.get(name)
+            component = components.get(name)
             if component is not None:
                 return component
         nxt = set()
@@ -331,6 +343,166 @@ def _resolve_include(rel, module, known):
         if base in ("", "."):
             return None
         base = posixpath.dirname(base)
+
+
+def _strip_comments(text):
+    """Comments declare nothing: a commented-out class must not seed a file.
+
+    Block comments are replaced by their newlines so line numbers stay true.
+    """
+    text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m.group(0).count("\n"), text, flags=re.S)
+    return re.sub(r"(?m)//.*$", "", text)
+
+
+def _swift_supertypes(header):
+    """The inheritance list after the first top-level `:`.
+
+    Generic parameters and constructor arguments are inside brackets, which the
+    depth count skips; `where` clauses are cut off the last name they follow.
+    """
+    index = _top_level_colon(header)
+    if index < 0:
+        return []
+    names = []
+    for expression in _split_top_level(header[index + 1:]):
+        token = re.split(r"[<(]", expression.strip(), 1)[0].strip()
+        token = token.split()[0] if token else ""
+        name = token.split(".")[-1]
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            names.append(name)
+    return names
+
+
+def _swift_type_table(files):
+    """Simple class name -> every declaration, with its parsed supertypes."""
+    table = {}
+    for f in files:
+        if f["ext"] not in SWIFT_EXT:
+            continue
+        text = _strip_comments(f["text"])
+        for match in SWIFT_CLASS_RE.finditer(text):
+            table.setdefault(match.group(1), []).append({
+                "file": f["rel"],
+                "line": _line_of(text, match.start(1)),
+                "supertypes": _swift_supertypes(_class_header(text, match.end())),
+            })
+    return table
+
+
+def _objc_impl_index(files):
+    """`X.h` -> `X.m`/`X.mm`: the declaration and its body are one file."""
+    impl = {}
+    for f in files:
+        stem, ext = posixpath.splitext(f["rel"])
+        if ext in OBJC_EXT:
+            impl.setdefault(stem + ".h", f["rel"])
+    return impl
+
+
+def _objc_type_table(files):
+    """`@interface` declarations, pointed at the implementation that holds code.
+
+    A header with no scanned implementation keeps the header as its file; the
+    entrypoint pass skips it, because a header body is not something to rank.
+    """
+    impl_of = _objc_impl_index(files)
+    table = {}
+    for f in files:
+        if f["ext"] not in OBJC_EXT | OBJC_HEADER_EXT:
+            continue
+        text = _strip_comments(f["text"])
+        for match in OBJC_INTERFACE_RE.finditer(text):
+            header = _class_header(text, match.end())
+            supertypes = [match.group(2)] if match.group(2) else []
+            for block in OBJC_PROTOCOL_RE.findall(header):
+                for name in block.split(","):
+                    name = name.strip().split()[-1] if name.strip() else ""
+                    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                        supertypes.append(name)
+            table.setdefault(match.group(1), []).append({
+                "file": impl_of.get(f["rel"], f["rel"]),
+                "line": _line_of(text, match.start(1)),
+                "supertypes": supertypes,
+            })
+    return table
+
+
+def _ios_entrypoints(files):
+    """Swift and Objective-C entrypoints, reusing the Android chain walk.
+
+    `@main`, `@UIApplicationMain`, and `UIApplicationMain(` are the process
+    entry (ui, `MAIN`). A class conforming to `UIApplicationDelegate`,
+    `AppDelegate`, or `SceneDelegate` is the app (app, `APPDELEGATE X`). A
+    `UIViewController` or `UIView` subclass, directly or through a project base
+    up to four hops, is UI (`VIEWCONTROLLER X`). Delegate conformance is read
+    from the class's own declaration only: Swift does not inherit it.
+
+    An ObjC `@interface` lives in a header, so the entrypoint is the scanned
+    implementation. @IBAction handlers are deliberately not seeded: the
+    controller file is already the entrypoint, and seeding each handler would
+    multiply one file's seeds for no extra reach.
+    """
+    found = []
+    for f in files:
+        if f["ext"] not in SWIFT_EXT and f["ext"] not in OBJC_EXT:
+            continue
+        text = _strip_comments(f["text"])
+        if f["ext"] in SWIFT_EXT:
+            for match in SWIFT_MAIN_ATTR_RE.finditer(text):
+                found.append({"kind": "ui", "framework": "ios", "file": f["rel"],
+                              "line": _line_of(text, match.start()), "detail": "MAIN"})
+        for match in UIKIT_MAIN_CALL_RE.finditer(text):
+            found.append({"kind": "ui", "framework": "ios", "file": f["rel"],
+                          "line": _line_of(text, match.start()), "detail": "MAIN"})
+
+    for framework, table in (("swift", _swift_type_table(files)),
+                             ("objc", _objc_type_table(files))):
+        for name in sorted(table):
+            for record in table[name]:
+                if record["file"].endswith(".h"):
+                    continue
+                if any(base in IOS_APP_DELEGATES for base in record["supertypes"]):
+                    found.append({"kind": "app", "framework": framework,
+                                  "file": record["file"], "line": record["line"],
+                                  "detail": "APPDELEGATE %s" % name})
+                component = _component_through(
+                    record["supertypes"], table, IOS_VIEW_BASES)
+                if component is None:
+                    continue
+                kind, label = component
+                found.append({"kind": kind, "framework": framework,
+                              "file": record["file"], "line": record["line"],
+                              "detail": "%s %s" % (label, name)})
+    return found
+
+
+def filter_entrypoints_by_language(entrypoints, supported):
+    """Drop entrypoints whose language supplies under 5% of supported lines.
+
+    A bundled helper language can supply seeds for a repo it does not carry.
+    Returns (kept, ignored), where each `ignored` record names the language,
+    how many entrypoints it supplied, its non-blank lines, and its share.
+
+    An entrypoint on a file with no source language (a `package.json` `bin`)
+    names no lines of its own, so the share test does not apply to it.
+    """
+    total = sum(entry["loc"] for entry in supported)
+    shares = {entry["lang"]: (entry["loc"] / total if total else 0.0) for entry in supported}
+    kept = []
+    ignored = {}
+    for entry in entrypoints:
+        lang = EXT_LANG.get(posixpath.splitext(entry["file"])[1].lower())
+        if lang is None or shares.get(lang, 0.0) >= ENTRY_LANGUAGE_FLOOR:
+            kept.append(entry)
+            continue
+        slot = ignored.setdefault(lang, {
+            "lang": lang,
+            "entrypoints": 0,
+            "loc": next((e["loc"] for e in supported if e["lang"] == lang), 0),
+            "share": shares.get(lang, 0.0),
+        })
+        slot["entrypoints"] += 1
+    return kept, [ignored[lang] for lang in sorted(ignored)]
 
 
 def extract_entrypoints(files):
@@ -447,7 +619,7 @@ def extract_entrypoints(files):
             for match in JVM_CLASS_RE.finditer(text):
                 header = _class_header(text, match.end())
                 component = _component_through(
-                    _android_supertypes(header, kotlin), type_table)
+                    _android_supertypes(header, kotlin), type_table, ANDROID_COMPONENTS)
                 if component is None:
                     continue
                 kind, label = component

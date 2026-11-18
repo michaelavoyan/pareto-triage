@@ -298,10 +298,11 @@ class SwiftGateTests(unittest.TestCase):
             result = run(["gate", repo, "--min-loc", "1", "--out", out])
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             scope = json.loads((out / "scope.json").read_text())
-        self.assertEqual(scope["languages"]["supported"], ["swift", "objc"])
+        self.assertEqual(sorted(scope["languages"]["supported"]), ["objc", "swift"])
         self.assertEqual(scope["gate"]["reasons"],
                          ["no entrypoints detected (routes, CLI commands, cron jobs, "
-                          "consumers, Android components); reachability would be invented"])
+                          "consumers, Android components, iOS app/UI classes); "
+                          "reachability would be invented"])
 
     def test_both_documented_gate_reasons_are_reachable_on_a_mixed_tree(self):
         with tempfile.TemporaryDirectory() as tmp:

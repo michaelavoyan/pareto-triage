@@ -8,15 +8,26 @@
 |---|---|---|
 | HTTP route | framework-specific patterns below, including Django `include(`, Spring `@GetMapping`, JAX-RS `@GET` | 5 |
 | Android UI | a class extending `Activity`, `AppCompatActivity`, `ComponentActivity`, `FragmentActivity`, or `Fragment`, directly or through a project base (up to four hops) | 5 |
+| iOS UI | `@main`, `@UIApplicationMain`, or `UIApplicationMain(`; a `UIViewController` or `UIView` subclass, directly or through a project base (up to four hops); ObjC `@interface X : UIViewController` | 5 |
 | Middleware | `app.use('<path>', …)` — on the request path, not a route | 4 |
 | Android background | a class extending `Service`, `IntentService`, `JobService`, `Worker`, `BroadcastReceiver`, or `ContentProvider`, directly or through a project base | 4 |
 | Queue consumer | `.consume(` only when the receiver or the line names a queue, plus `new Consumer(`, `@app.task`, `@shared_task`, and the narrow Rx signal below | 4 |
 | Cron / scheduled | `cron.schedule`, `setInterval`, `@scheduled`, `schedule.every` | 4 |
 | CLI command | `package.json` `bin`, `#!/usr/bin/env node`, `if __name__ == "__main__"`, argparse/click/typer, `public static void main(`, `fun main(` | 3 |
+| iOS application | a class conforming to `UIApplicationDelegate`, `AppDelegate`, or `SceneDelegate`; ObjC `@interface X : NSObject <UIApplicationDelegate>` | 3 |
 | Android application | a class extending `Application`, directly or through a project base | 3 |
 | Public API | an `export` or `__all__` in `index.{ts,js}`, `index.tsx`, or `__init__.py` | 3 |
 
 A file that is several things gets the best seed. Each import hop costs one level, down to a floor of 2.
+
+## The entrypoint language has to carry the repo
+
+An entrypoint counts only when its language holds at least **5% of the supported non-blank lines**. Below that, the entrypoints are ignored and the gate names the language in a warning; if nothing survives, the gate refuses rather than deriving reachability from a helper language.
+
+The measurement is per repo and applies to every repo. Signal-iOS is the case that motivated it: 22 bundled Python files supplied 39 CLI entrypoints beside 705k lines of Swift that supplied none, so the gate passed on tooling while saying nothing about the app.
+
+An entrypoint on a file with no source language — a `package.json` `bin`, which names a script rather than holding one — is not judged by share: it has no lines of its own to weigh. `scope.json` records the kept entrypoints in `entrypoints`, the ignored languages in `entrypoints_ignored`, and the floor in `gate.entrypoint_language_floor`.
+
 
 ## Framework patterns (v1)
 
