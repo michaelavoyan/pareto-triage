@@ -351,7 +351,7 @@ def render(ranked, scope):
     if sample.get("mode"):
         out.append("<div class=\"note\"><p>Candidate sites were sampled: <strong>%s</strong>, "
                    "seed %s — %s of %s candidates kept, at most %s per file. "
-                   "Rule findings cover every file; this is a sample only for judgment.</p></div>"
+                   "Rule findings cover every scanned file; this is a sample only for judgment.</p></div>"
                    % (_e(sample.get("mode")), _e(str(sample.get("seed", 0))),
                       _e(str(sample.get("kept", 0))), _e(str(sample.get("population", 0))),
                       _e(str(sample.get("per_file", 0)))))

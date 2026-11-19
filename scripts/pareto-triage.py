@@ -11,7 +11,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from lib.walk import walk, count_loc
+from lib.walk import walk, count_loc, is_test_path
 from lib.lang import (SUPPORTED_LABEL, frameworks, language_label, languages,
                       read_manifests, split_supported, test_runner)
 from lib.entry import (extract_entrypoints, entrypoint_counts,
@@ -536,6 +536,11 @@ def cmd_context(positional, flags):
         "population": summary["population"],
         "kept": summary["emitted"],
         "per_file": summary["per_file"],
+        "judgeable": {
+            "candidates": summary["judgeable_candidates"],
+            "filtered": summary["judgeable_filtered"],
+            "fallback": summary["judgeable_fallback"],
+        },
     }
     sample_path = out_dir / "sample.json"
     sample_path.write_text(json.dumps(sample_payload, indent=2) + "\n", encoding="utf-8")
@@ -567,7 +572,21 @@ def cmd_context(positional, flags):
     print("sample     %s, seed %d: kept %s of %s candidates, max %d per file"
           % (order, seed, num(summary["emitted"]), num(summary["population"]),
              summary["per_file"]))
-    print("           rule findings cover every file; this is a sample only for judgment")
+    print("judgeable  %s of %s candidates (%d%%) have a failure surface and 4+ non-blank lines; "
+          "%s filtered from the sample"
+          % (num(summary["judgeable_candidates"]), num(summary["candidates"]),
+             100 * summary["judgeable_candidates"] // max(summary["candidates"], 1),
+             num(summary["judgeable_filtered"])))
+    if summary["judgeable_fallback"]:
+        if summary["judgeable_candidates"] < summary["limit"]:
+            print("warning    only %s judgeable site(s) for a limit of %s: kept %s "
+                  "non-judgeable site(s) from the ranked fallback"
+                  % (num(summary["judgeable_candidates"]), num(summary["limit"]),
+                     num(summary["judgeable_fallback"])))
+        else:
+            print("fallback   per-file caps left the sample short: kept %s non-judgeable "
+                  "site(s) in ranked order" % num(summary["judgeable_fallback"]))
+    print("           rule findings cover every scanned file; this is a sample only for judgment")
     if order == "ranked":
         print("selection  reach → inbound edges → body size, max %d per file"
               % summary["per_file"])
@@ -678,9 +697,11 @@ def cmd_detect(positional, flags):
 
     walked = walk(repo)
     aliases = read_aliases(repo)
-    coverage = scope.get("rule_coverage") or rule_coverage(walked["files"])
+    scanned = [f for f in walked["files"] if not is_test_path(f["rel"])]
+    test_files = len(walked["files"]) - len(scanned)
+    coverage = rule_coverage(scanned)
     unruled = _unruled_languages(coverage, set(scope["languages"]["supported"]))
-    findings, warnings = detect_defects(walked["files"])
+    findings, warnings = detect_defects(scanned)
 
     entry_files = {e["file"] for e in scope["entrypoints"]}
     seeds = seeds_from_entrypoints(scope["entrypoints"])
@@ -718,7 +739,8 @@ def cmd_detect(positional, flags):
         by_reach[finding["reach"]] = by_reach.get(finding["reach"], 0) + 1
 
     print("pareto-triage %s — detect" % VERSION)
-    print("files      %s scanned" % num(len(walked["files"])))
+    print("files      %s scanned, %s skipped as test code"
+          % (num(len(scanned)), num(test_files)))
     _print_rule_coverage(coverage)
     print("findings   %d" % len(findings))
     for taxonomy, count in sorted(by_taxonomy.items(), key=lambda kv: -kv[1]):

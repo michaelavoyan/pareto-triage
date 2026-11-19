@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+- `jvm-sql-injection` and `jvm-exec-injection` no longer fire on shapes that
+  only look like injection. `execute(` is a name shared by SQL statements,
+  executors, and callbacks, so the SQL rule now also requires a statement verb
+  (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE INTO`) inside the call;
+  `keyedExecutor.execute("Call::" + id, …)` is quiet. The exec rule now
+  requires a `+` operand that is not a compile-time constant: lowercase names,
+  fields, parameters, array elements, and calls count as values, while
+  `UPPER_SNAKE_CASE` constants (`FILTER_SPEC`, `BuildConfig.ENDPOINT`), quoted
+  literals, and numbers do not. `exec("logcat -d " + FILTER_SPEC)` is quiet;
+  `exec("convert " + path)` still fires. Both rules now ignore calls inside
+  string literals, not only behind a comment marker. Fixture pairs pin the two
+  false-positive shapes next to the planted defects.
+- `detect` skips test files with the same `is_test_path` predicate `context`
+  uses, and prints the count (`files 9,401 scanned, 581 skipped as test code`).
+  Test code is not on the request path; a rule finding there cannot be fixed by
+  a change that moves the product. On Signal-Android this removed 9 of 74
+  findings, all under `/test/` and `/androidTest/`.
+- `context` samples judgeable sites only: at least four non-blank body lines
+  and at least one failure surface (`try`/`catch`, `await`/`suspend`/
+  `withContext`, a network call, a DB write, or a loop). The filter runs in the
+  sampling step, never on `--all`: `candidates.jsonl` still holds every
+  candidate, with the selected sites as its prefix. When fewer judgeable sites
+  exist than the limit, the cap is filled from the non-judgeable remainder in
+  ranked order and the fallback is printed. `sample.json` gains
+  `judgeable: {candidates, filtered, fallback}`. On Signal-Android the first
+  200 selected sites go from 37 with a failure surface (18.5%) and a median
+  body of 6 lines to 200 (100%) and 15 lines, with 56 three-line-or-shorter
+  sites removed; the population stays 20,768 and the judgeable share of it is
+  20.9%.
+
 ## 0.4.0
 
 - `detect` reports rule coverage instead of leaving a zero finding count to be

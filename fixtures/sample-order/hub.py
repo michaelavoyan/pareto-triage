@@ -1,14 +1,26 @@
 def run():
-    return 0
+    try:
+        return 0
+    except ValueError:
+        return 1
 
 
 def one():
-    return 1
+    try:
+        return 1
+    except ValueError:
+        return 0
 
 
 def two():
-    return 2
+    try:
+        return 2
+    except ValueError:
+        return 0
 
 
 def three():
-    return 3
+    try:
+        return 3
+    except ValueError:
+        return 0

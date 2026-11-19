@@ -1,6 +1,12 @@
 def deep_handler():
-    return 7
+    try:
+        return 7
+    except ValueError:
+        return 0
 
 
 def run():
-    return deep_handler()
+    try:
+        return deep_handler()
+    except ValueError:
+        return 0

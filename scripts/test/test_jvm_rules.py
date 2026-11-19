@@ -15,6 +15,7 @@ FIXTURES = SCRIPTS.parent / "fixtures"
 FIXTURE = FIXTURES / "jvm-rules"
 PREFIX = "src/main/java/com/acme/"
 SAFE = PREFIX + "SafeCounterparts.java"
+CLEAN = [SAFE, PREFIX + "ConstantExec.java", PREFIX + "KeyedCallback.java"]
 
 sys.path.insert(0, str(SCRIPTS))
 from lib.rules import detect_defects  # noqa: E402
@@ -70,8 +71,9 @@ class JvmFixtureTests(unittest.TestCase):
         for rule in EXPECTED.values():
             self.assertEqual(sum(1 for f in self.findings if f["rule"] == rule), 1, rule)
 
-    def test_the_safe_counterpart_file_is_clean(self):
-        self.assertEqual([f for f in self.findings if f["file"] == SAFE], [])
+    def test_the_safe_counterparts_are_clean(self):
+        for rel in CLEAN:
+            self.assertEqual([f for f in self.findings if f["file"] == rel], [], rel)
 
     def test_findings_are_tool_detected_defects_with_the_documented_axes(self):
         self.assertEqual(len(self.findings), len(EXPECTED))
@@ -109,12 +111,61 @@ class JvmRuleTests(unittest.TestCase):
     def test_exec_without_concatenation_is_quiet(self):
         self.assertEqual(self.rules("A.java", 'Runtime.getRuntime().exec("ls");\n'), [])
 
+    def test_exec_with_a_constant_operand_is_quiet(self):
+        text = 'Runtime.getRuntime().exec("logcat -d " + FILTER_SPEC);\n'
+        self.assertEqual(self.rules("A.java", text), [])
+
+    def test_exec_with_a_qualified_constant_is_quiet(self):
+        text = 'new ProcessBuilder("logcat -d " + BuildConfig.LOG_FILTER).start();\n'
+        self.assertEqual(self.rules("A.java", text), [])
+
+    def test_exec_with_literal_operands_only_is_quiet(self):
+        text = 'Runtime.getRuntime().exec("ls " + "-l");\n'
+        self.assertEqual(self.rules("A.java", text), [])
+
+    def test_exec_with_a_method_call_operand_fires(self):
+        text = 'Runtime.getRuntime().exec("convert " + options.render());\n'
+        self.assertEqual(self.rules("A.java", text),
+                         [("jvm-exec-injection", 1, text.strip())])
+
+    def test_exec_with_a_lowercase_parameter_fires(self):
+        text = 'Runtime.getRuntime().exec("convert " + path);\n'
+        self.assertEqual(self.rules("A.java", text),
+                         [("jvm-exec-injection", 1, text.strip())])
+
+    def test_exec_with_a_constant_and_a_value_fires(self):
+        text = 'Runtime.getRuntime().exec("logcat -d " + FILTER_SPEC + path);\n'
+        self.assertEqual(self.rules("A.java", text),
+                         [("jvm-exec-injection", 1, text.strip())])
+
     def test_commented_exec_is_quiet(self):
         self.assertEqual(self.rules("A.java", '// Runtime.getRuntime().exec("rm " + p);\n'), [])
+
+    def test_exec_inside_a_string_is_quiet(self):
+        text = 'String cmd = "Runtime.getRuntime().exec(\\"rm \\" + p)";\n'
+        self.assertEqual(self.rules("A.java", text), [])
 
     def test_sql_without_concatenation_is_quiet(self):
         self.assertEqual(self.rules("A.java",
                                     'stmt.executeQuery("SELECT * FROM t WHERE id = ?");\n'), [])
+
+    def test_sql_on_a_keyed_executor_is_quiet(self):
+        text = 'keyedExecutor.execute("Call::" + info.getRecipientId(), () -> {\n'
+        self.assertEqual(self.rules("A.java", text), [])
+
+    def test_sql_with_a_concatenated_identifier_but_no_verb_is_quiet(self):
+        text = 'keyedExecutor.execute(TASK_PREFIX + recipientId);\n'
+        self.assertEqual(self.rules("A.java", text), [])
+
+    def test_sql_with_a_verb_and_concatenation_still_fires(self):
+        for text in (
+            'stmt.executeQuery("SELECT * FROM t WHERE id = \'" + id + "\'");\n',
+            'stmt.executeUpdate("UPDATE t SET x = " + value);\n',
+            'stmt.execute("DELETE FROM t WHERE id = " + id);\n',
+            'stmt.execute("REPLACE INTO t VALUES (" + value + ")");\n',
+        ):
+            self.assertEqual(self.rules("A.java", text),
+                             [("jvm-sql-injection", 1, text.strip())], text)
 
     def test_empty_catch_body_spanning_lines_fires_once(self):
         text = "try {\n    go();\n} catch (IOException e) {\n    // ignored\n}\n"
