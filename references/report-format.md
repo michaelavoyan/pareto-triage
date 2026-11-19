@@ -16,6 +16,8 @@ or
 
 Cumulative impact vs cumulative effort, plus a ladder answering one question at three heights: what share of the total effort buys 50%, 70%, 80% of the impact, and how many clusters that is. The 80% row is the Pareto headline when it is cheap; the 50% and 70% rows are the answer when it is not. A reader must never be left with only "no shortcut".
 
+With fewer than three clusters the shape verdict is `insufficient` and the ladder is omitted: C20 is arithmetic at that count, not evidence. Say the verdict is not meaningful there instead of printing a row.
+
 Also markers at S / M / L budget points. Budgets are effort units — 5, 15, 30 by default, overridable with `--budget`. Text, not a chart: "at 5 effort units → 41% of weighted impact; at 15 → 68%". When a budget exceeds the whole set, say so: "L (30) is not reached: the whole set costs 22 units."
 
 Never show a percentage without the tool version that produced it.

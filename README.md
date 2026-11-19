@@ -42,7 +42,7 @@ You get `out/report.html`. If the repo is too small or has no entrypoints, it re
 
 ## What comes back
 
-One HTML file, no dashboard, no login. It opens with one of four answers:
+One HTML file, no dashboard, no login. It opens with one of five answers:
 
 | Verdict | What it means | What you do |
 |---|---|---|
@@ -50,6 +50,7 @@ One HTML file, no dashboard, no login. It opens with one of four answers:
 | `concentrated-expensive` | real risk, expensive fix | schedule it properly |
 | `moderate` | the curve is gentle | spend an effort budget |
 | `flat` | no shortcut exists | stop looking for one |
+| `insufficient` | fewer than three clusters; C20 is arithmetic | collect more findings, do not read a shape |
 
 Even a flat repo gets numbers: what 10% of the work buys, what half buys. "80% of the impact for 60% of the effort" is still a plan you can take to a standup.
 
@@ -61,7 +62,11 @@ The judgement calls — missing timeouts, swallowed errors, no idempotency — g
 
 Java and Kotlin are scanned for entrypoints, reachability, and defects. Five JVM rules cover command injection (`Runtime.exec` or `ProcessBuilder` with concatenation), SQL built by concatenation, empty `catch`, `MessageDigest` with MD5 or SHA-1, and `new ObjectInputStream`. The secret rules run on `.java`, `.kt`, and `.kts` too.
 
-Swift and Objective-C are recognized and placed on the import graph: `#import` resolves header paths against the scanned tree, falling back to a basename only when exactly one scanned file carries it, and Swift target membership comes from `project.pbxproj`, so a same-target type mention is an edge. `import Module` is not an edge: it names a module, not a file, and it produced 97% of the graph on Signal-iOS while carrying no call information. Their entrypoints are `@main`/`@UIApplicationMain`/`UIApplicationMain(`, app delegates, and `UIViewController`/`UIView` subclasses through four hops of project bases, including ObjC `@interface` declarations. Defect rules for Swift and Objective-C are not implemented yet.
+Swift and Objective-C support is reachability and site extraction only. `#import` resolves header paths against the scanned tree, falling back to a basename only when exactly one scanned file carries it; Swift target membership comes from `project.pbxproj`, so two Swift files are neighbours only when they share a target and one names a type the other declares. `import Module` is not an edge: it names a module, not a file, and it produced 97% of the graph on Signal-iOS while carrying no call information. Entrypoints are `@main`/`@UIApplicationMain`/`UIApplicationMain(`, app delegates, and `UIViewController`/`UIView` subclasses through four hops of project bases, including ObjC `@interface` declarations; `context` extracts Swift and Objective-C functions as candidate sites.
+
+**No Swift or Objective-C defect rules exist.** `detect` has nothing to run on `.swift`, `.m`, or `.mm`, so it reports rule coverage, prints `no rules were applied to N files of Swift` (or Objective-C), and `rank` writes the same sentence into `could_not_determine`. Zero findings there means unassessed, not clean.
+
+The same-target rule is the limit that matters on a real tree. A separate framework target reached only through `import Framework` is unreachable: on Signal-iOS, 1,311 Swift files stayed at reach 1 — 44% of the code — because SignalServiceKit is its own target. A 200-site phase-2 calibration on the reachable part produced one cosmetic finding. iOS support buys reachability and candidate sites; it has not yet demonstrated real defects.
 
 An entrypoint only counts when its language holds at least 5% of the supported lines. A repo whose seeds all come from a bundled helper language is refused, with the language named, rather than ranked on reachability that describes the tooling instead of the app.
 
@@ -87,7 +92,7 @@ python3 $S rank $R && python3 $S report $R
 
 It cannot see through a DI container, an event bus, or a route built from a string. Reachability follows imports, understands `tsconfig` aliases and workspace names, and stops three hops out by default.
 
-It has never audited a real repository: the tests run on three fixtures. Treat your first run as an experiment.
+It has not produced a full audit of a real repository. The tests run on fixtures; the measurements quoted here come from running individual phases on Signal-iOS and Signal-Android, and the only phase-2 calibration on iOS was 200 sites yielding one cosmetic finding. Treat your first run as an experiment.
 
 Secrets are masked in `report.html` and `report.json`. `out/defects.jsonl` keeps the raw line, so don't commit `out/`.
 

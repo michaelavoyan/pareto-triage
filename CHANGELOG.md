@@ -1,6 +1,39 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+- `detect` reports rule coverage instead of leaving a zero finding count to be
+  read as clean. It prints one line per scanned language (`swift 0/9 files (no
+  rules)`), and when a supported language has files but no detector it prints
+  `no rules were applied to 9 files of Swift — these files are unassessed, not
+  clean`. `scope.json` records the same data in `rule_coverage.by_language`
+  (`files`, `files_with_rules`, `rules`), `ranked.json` copies it and writes
+  `no rules were applied to 9 files of Swift: the tool has no Swift defect
+  rules, so this report says nothing about defects in them.` into
+  `could_not_determine`. The check is derived from the extension-to-rule table,
+  not from a Swift special case, so a language added later without rules is
+  reported the same way. Measured on Signal-iOS, where `detect` used to print
+  `findings 0` for 705k lines of Swift.
+- Swift and Objective-C call sites now count toward effort. `SOURCE_EXTS` was
+  missing `.swift`, `.m`, and `.mm`, so a failure mode in those languages got
+  only its file and no mentions; a Swift finding with six call sites now scores
+  effort 2 instead of the floor. Fixture coverage asserts the rise, not the
+  constant.
+- A shape verdict needs at least three clusters. With one cluster C20 is 1.0 by
+  arithmetic and the report used to print `shortcut` while `pareto.shortcut`
+  was false; with two it is whichever cluster is larger. `shape.verdict` is now
+  `insufficient`, `shape.c20` stays a number, `shape.n_clusters` and
+  `shape.min_clusters` state the count and the threshold, the report says the
+  verdict is not meaningful at that cluster count, the effort ladder is
+  omitted, and every `pareto`/`pareto_ladder` row reports `shortcut: false`.
+  `references/rubric.md` documents the threshold. Measured on the 2-cluster
+  express fixture, which used to print `shortcut` at C20 60%.
+- README and `references/entrypoints.md` state the iOS limit as measured:
+  Swift/Objective-C support is reachability and site extraction only, there are
+  no defect rules for them, Swift reachability needs a same-target type mention
+  so a separate framework target such as SignalServiceKit is unreachable
+  (1,311 files at reach 1, 44% of the code), and the 200-site calibration on
+  Signal-iOS produced one cosmetic finding.
 
 - `context` extracts Swift and Objective-C sites instead of refusing on an iOS
   repo. Swift `func`/`init`/`deinit` and computed `var` bodies are sites; a type
