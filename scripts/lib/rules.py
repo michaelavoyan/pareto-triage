@@ -282,9 +282,17 @@ def _js_defects(text):
 JVM_EXEC_CALL = re.compile(
     r"(?:\bRuntime\s*\.\s*getRuntime\s*\(\s*\)\s*\.\s*exec|\bProcessBuilder)\s*\(")
 JVM_SQL_CALL = re.compile(r"\b(?:executeQuery|executeUpdate|execute)\s*\(")
+JVM_SQL_VERB = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE\s+INTO)\b", re.I)
 JVM_WEAK_HASH = re.compile(r"\bMessageDigest\s*\.\s*getInstance\s*\(\s*\"(?:MD5|SHA-1)\"")
 JVM_OBJECT_INPUT = re.compile(r"\bnew\s+ObjectInputStream\s*\(")
 JVM_CATCH = re.compile(r"\bcatch\s*\([^)]*\)\s*\{")
+
+# A '+' operand that is a literal or a compile-time constant. UPPER_SNAKE_CASE
+# names (FILTER_SPEC, BuildConfig.ENDPOINT) are constants; a lowercase name, a
+# field, a parameter, an array element, or a call is a value that can vary.
+JVM_CONSTANT_OPERAND = re.compile(
+    r"^(?:\"[^\"]*\"|'[^']*'|[-+]?\d+(?:\.\d+)?[fFdDlL]?|true|false|null)$")
+JVM_UPPER_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def _blank_noncode(text):
@@ -342,21 +350,109 @@ def _jvm_empty_catches(text):
     return found
 
 
+def _call_arguments(original, blanked, start):
+    """Source text of a call's arguments, from just after '(' to the match.
+
+    `blanked` is the same line with comments and literals replaced by spaces,
+    so parentheses inside a string cannot close the call early. When the call
+    does not close on this line, the rest of the line is returned: the rule is
+    line-based and only claims what the line shows.
+    """
+    depth = 1
+    index = start
+    while index < len(blanked):
+        if blanked[index] == "(":
+            depth += 1
+        elif blanked[index] == ")":
+            depth -= 1
+            if not depth:
+                return original[start:index]
+        index += 1
+    return original[start:]
+
+
+def _split_concat(text):
+    """Split an expression on top-level '+', ignoring literals and brackets.
+
+    `a + b(c + d)` has two operands, not three: the inner '+' belongs to the
+    call. Quotes are tracked so a '+' inside a string does not split either.
+    """
+    parts = []
+    start = 0
+    depth = 0
+    quote = None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote:
+            if char == "\\":
+                index += 2
+                continue
+            if char == quote:
+                quote = None
+        elif char in "\"'":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}":
+            depth = max(0, depth - 1)
+        elif char == "+" and depth == 0:
+            parts.append(text[start:index])
+            start = index + 1
+        index += 1
+    parts.append(text[start:])
+    return [part.strip() for part in parts]
+
+
+def _is_constant_operand(operand):
+    """True when a '+' operand carries no value that can change at run time.
+
+    `exec("logcat -d " + FILTER_SPEC)` is a fixed command plus a compile-time
+    constant, not injection. `exec("convert " + path)` is: `path` is a value.
+    Anything not recognised as a constant is treated as a value, so the rule
+    errs toward silence only where the operand is provably fixed.
+    """
+    text = operand.strip().rstrip(";").strip()
+    while text.endswith(")") and text.count("(") < text.count(")"):
+        text = text[:-1].strip()
+    if not text:
+        return True
+    if JVM_CONSTANT_OPERAND.match(text):
+        return True
+    if text.startswith("!") and JVM_CONSTANT_OPERAND.match(text[1:].strip()):
+        return True
+    return bool(JVM_UPPER_NAME.match(text.split(".")[-1].strip()))
+
+
 def _jvm_defects(text):
     lines = text.split("\n")
+    blank_lines = _blank_noncode(text).split("\n")
     found = []
     for number, raw in enumerate(lines, start=1):
         stripped = raw.strip()
         if stripped.startswith(("//", "*", "/*")):
             continue
-        if JVM_EXEC_CALL.search(stripped) and "+" in stripped:
-            found.append(("jvm-exec-injection", number, stripped[:300]))
-        has_quote = "\"" in stripped or "'" in stripped
-        if JVM_SQL_CALL.search(stripped) and "+" in stripped and has_quote:
-            found.append(("jvm-sql-injection", number, stripped[:300]))
+        blanked = blank_lines[number - 1]
+
+        exec_match = JVM_EXEC_CALL.search(blanked)
+        if exec_match:
+            operands = _split_concat(_call_arguments(raw, blanked, exec_match.end()))
+            if len(operands) > 1 and any(not _is_constant_operand(o) for o in operands):
+                found.append(("jvm-exec-injection", number, stripped[:300]))
+
+        # `execute(` alone is not SQL: an executor, a command runner, or a
+        # callback dispatcher all use the name. The line must also carry a
+        # statement verb inside the call's arguments, so a concatenated log
+        # tag or task key stays quiet.
+        sql_match = JVM_SQL_CALL.search(blanked)
+        if sql_match:
+            arguments = _call_arguments(raw, blanked, sql_match.end())
+            if JVM_SQL_VERB.search(arguments) and len(_split_concat(arguments)) > 1:
+                found.append(("jvm-sql-injection", number, stripped[:300]))
+
         if JVM_WEAK_HASH.search(stripped):
             found.append(("jvm-weak-hash", number, stripped[:300]))
-        if JVM_OBJECT_INPUT.search(stripped):
+        if JVM_OBJECT_INPUT.search(blanked):
             found.append(("jvm-object-input-stream", number, stripped[:300]))
 
     for number in _jvm_empty_catches(text):
