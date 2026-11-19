@@ -71,6 +71,24 @@ class ScoringTests(unittest.TestCase):
         self.assertEqual(info["verdict"], "flat")
         self.assertLess(info["c20"], 0.3)
 
+    def test_one_or_two_clusters_cannot_support_a_shape_verdict(self):
+        for count in (1, 2):
+            clusters = [{"key": str(i), "impact": 5.0 - i, "effort": 1.0}
+                        for i in range(count)]
+            info = shape(clusters)
+            self.assertEqual(info["verdict"], "insufficient", count)
+            self.assertEqual(info["n_clusters"], count)
+            self.assertGreaterEqual(info["min_clusters"], 3)
+            self.assertIsInstance(info["c20"], float)
+
+    def test_three_clusters_are_enough_for_a_real_verdict(self):
+        clusters = [{"key": "big", "impact": 8.0, "effort": 1.0},
+                    {"key": "a", "impact": 1.0, "effort": 1.0},
+                    {"key": "b", "impact": 1.0, "effort": 1.0}]
+        info = shape(clusters)
+        self.assertNotEqual(info["verdict"], "insufficient")
+        self.assertEqual(info["verdict"], "shortcut")
+
     def test_quadrant_splits_on_medians(self):
         items = [
             {"id": "a", "impact": 5.0, "effort": 1},
@@ -124,6 +142,38 @@ class RankPipelineTests(unittest.TestCase):
             self.assertIn("cpp (2 files)", ignored)
             self.assertIn("c (1 file)", ignored)
             self.assertNotIn("6 files", ignored)
+
+    def test_rule_coverage_is_written_to_the_ranking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            run(["gate", FIXTURES / "ios-app", "--min-loc", "1", "--out", out])
+            run(["detect", FIXTURES / "ios-app", "--out", out])
+            result = run(["rank", FIXTURES / "ios-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            ranked = json.loads((out / "ranked.json").read_text())
+
+        swift = next(row for row in ranked["rule_coverage"]["by_language"]
+                     if row["lang"] == "swift")
+        self.assertEqual(swift["files_with_rules"], 0)
+        line = next(item for item in ranked["could_not_determine"]
+                    if item.startswith("no rules were applied to"))
+        self.assertIn("files of Swift", line)
+        self.assertIn("says nothing about defects in them", line)
+
+    def test_a_covered_language_gets_no_unruled_line(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            run(["gate", FIXTURES / "python-app", "--min-loc", "5", "--out", out])
+            run(["detect", FIXTURES / "python-app", "--out", out])
+            result = run(["rank", FIXTURES / "python-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            ranked = json.loads((out / "ranked.json").read_text())
+
+        self.assertFalse([item for item in ranked["could_not_determine"]
+                          if item.startswith("no rules were applied to")])
+        python = ranked["rule_coverage"]["by_language"][0]
+        self.assertEqual(python["lang"], "python")
+        self.assertEqual(python["files_with_rules"], python["files"])
 
     def test_report_renders_offline_html(self):
         with tempfile.TemporaryDirectory() as tmp:

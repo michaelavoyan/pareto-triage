@@ -27,6 +27,31 @@ SUPPORTED = {"typescript", "javascript", "python", "java", "kotlin", "swift", "o
 
 SUPPORTED_LABEL = ", ".join(sorted(SUPPORTED))
 
+# Prose names for report lines. `objc` is the language id; "objc" is not a
+# language a reader recognizes.
+LANG_LABELS = {
+    "typescript": "TypeScript",
+    "javascript": "JavaScript",
+    "python": "Python",
+    "java": "Java",
+    "kotlin": "Kotlin",
+    "swift": "Swift",
+    "objc": "Objective-C",
+    "rust": "Rust",
+    "go": "Go",
+    "ruby": "Ruby",
+    "php": "PHP",
+    "csharp": "C#",
+    "scala": "Scala",
+    "c": "C",
+    "cpp": "C++",
+}
+
+
+def language_label(lang):
+    return LANG_LABELS.get(lang, lang.replace("_", " ").capitalize())
+
+
 MANIFESTS = [
     "package.json", "tsconfig.json", "requirements.txt", "pyproject.toml",
     "setup.py", "setup.cfg", "go.mod", "Cargo.toml", "pom.xml", "build.gradle",

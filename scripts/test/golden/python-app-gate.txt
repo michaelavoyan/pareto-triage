@@ -1,4 +1,4 @@
-pareto-triage 0.3.0 — gate
+pareto-triage 0.4.0 — gate
 repo       <root>
 files      2 scanned, 0 skipped
 code       12 non-blank lines (python 12)

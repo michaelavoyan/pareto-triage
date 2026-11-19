@@ -72,5 +72,50 @@ class DetectTests(unittest.TestCase):
             self.assertEqual(list(Path(out).iterdir()), [])
 
 
+class RuleCoverageTests(unittest.TestCase):
+    """A language with no detector must be reported, never implied clean."""
+
+    @staticmethod
+    def count(fixture, suffix):
+        return sum(1 for p in (FIXTURES / fixture).rglob("*" + suffix)
+                   if p.is_file() and "out" not in p.parts)
+
+    def test_swift_fixture_names_the_files_no_rule_could_read(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            gate = run(["gate", FIXTURES / "ios-app", "--min-loc", "1", "--out", out])
+            self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+            detect = run(["detect", FIXTURES / "ios-app", "--out", out])
+            self.assertEqual(detect.returncode, 0, detect.stdout + detect.stderr)
+
+            swift = self.count("ios-app", ".swift")
+            objc = self.count("ios-app", ".m")
+            self.assertIn("no rules were applied to %d files of Swift" % swift, detect.stdout)
+            self.assertIn("no rules were applied to %d files of Objective-C" % objc, detect.stdout)
+            self.assertIn("warning", detect.stdout)
+            self.assertIn("0/%d files (no rules)" % swift, detect.stdout)
+
+            scope = json.loads((out / "scope.json").read_text())
+            rows = {row["lang"]: row for row in scope["rule_coverage"]["by_language"]}
+            self.assertEqual(rows["swift"]["files"], swift)
+            self.assertEqual(rows["swift"]["files_with_rules"], 0)
+            self.assertEqual(rows["swift"]["rules"], [])
+            self.assertEqual(rows["objc"]["files_with_rules"], 0)
+
+    def test_a_language_with_rules_gets_no_warning(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            gate = run(["gate", FIXTURES / "python-app", "--min-loc", "5", "--out", out])
+            self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+            detect = run(["detect", FIXTURES / "python-app", "--out", out])
+            self.assertEqual(detect.returncode, 0, detect.stdout + detect.stderr)
+
+            self.assertNotIn("no rules were applied", detect.stdout)
+            scope = json.loads((out / "scope.json").read_text())
+            rows = {row["lang"]: row for row in scope["rule_coverage"]["by_language"]}
+            self.assertEqual(rows["python"]["files_with_rules"], rows["python"]["files"])
+            self.assertIn("py-eval", rows["python"]["rules"])
+
+
 if __name__ == "__main__":
     unittest.main()

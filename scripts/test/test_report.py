@@ -204,5 +204,65 @@ class UnprovenTests(unittest.TestCase):
         self.assertIn("carry no score on purpose", html)
 
 
+class InsufficientShapeTests(unittest.TestCase):
+    """Too few clusters: C20 is arithmetic, and the report must say so."""
+
+    @staticmethod
+    def single_cluster_report():
+        ranked = {
+            "repo_name": "r", "tool_version": "0.4.0",
+            "generated_at": "now", "confidence_cap": None, "confidence_cap_reason": None,
+            "shape": {"verdict": "insufficient", "c20": 1.0, "n_clusters": 1,
+                      "min_clusters": 3, "top_n": 1},
+            "quadrant": {"counts": {"quick_wins": 1, "batch_2": 0, "free": 0, "skip": 0}},
+            "curve": [{"key": "py-eval", "cum_impact_share": 1.0, "cum_effort": 1.0}],
+            "curve_markers": [{"label": "S", "budget": 5, "reached": False,
+                               "cum_effort": 1.0, "cum_impact_share": 1.0}],
+            "coverage": {},
+            "pareto": {"target": 0.8, "shortcut": False, "clusters": 1, "of_clusters": 1,
+                       "effort_share": 1.0, "impact_share": 1.0, "insufficient": True},
+            "pareto_ladder": [{"target": t, "shortcut": False, "clusters": 1,
+                               "of_clusters": 1, "effort_share": 1.0,
+                               "impact_share": 1.0} for t in (0.5, 0.7, 0.8)],
+            "clusters": [{"key": "py-eval", "taxonomy": "code-injection", "class": "defect",
+                          "n_sites": 1, "impact": 5.0, "effort": 1.0, "priority": 5.0,
+                          "findings": ["d_1"], "message": "eval", "file": "a.py", "line": 2}],
+            "findings": [{"id": "d_1", "taxonomy": "code-injection", "class": "defect",
+                          "file": "a.py", "line": 2, "evidence": "eval(x)", "reach": 5,
+                          "blast": 5, "silence": 3, "effort": 1, "impact": 5.0,
+                          "priority": 5.0, "confidence": "high",
+                          "effort_drivers": ["1 file", "0 importers"]}],
+            "blocking_security": [], "could_not_determine": ["x"], "redactions": [],
+        }
+        return render(ranked, {"root": ".", "entrypoints": [], "tests": {"present": True}})
+
+    def test_one_cluster_report_states_the_verdict_is_not_meaningful(self):
+        html = self.single_cluster_report()
+        self.assertIn("Verdict not meaningful: 1 cluster is too few to judge shape", html)
+        self.assertIn("C20 is 100% by arithmetic", html)
+        self.assertIn("a verdict needs at least 3 clusters", html)
+        self.assertIn("The effort ladder is omitted", html)
+        self.assertNotIn("There is a shortcut here.", html)
+        self.assertNotIn('class="verdict shortcut"', html)
+
+    def test_two_clusters_agree_between_ladder_and_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pipeline(FIXTURES / "express-app", out)
+            ranked = json.loads((out / "ranked.json").read_text())
+            self.assertEqual(ranked["shape"]["verdict"], "insufficient")
+            self.assertFalse(ranked["pareto"]["shortcut"])
+            self.assertTrue(all(not row["shortcut"] for row in ranked["pareto_ladder"]))
+
+            result = run(["report", FIXTURES / "express-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("verdict    insufficient", result.stdout)
+            html = (out / "report.html").read_text()
+
+        self.assertIn("Verdict not meaningful: 2 clusters are too few to judge shape", html)
+        self.assertNotIn("There is a shortcut here.", html)
+        self.assertNotIn('class="verdict shortcut"', html)
+
+
 if __name__ == "__main__":
     unittest.main()

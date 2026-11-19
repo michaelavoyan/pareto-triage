@@ -96,6 +96,17 @@ CONFIG_SECRETS = [
                 r"['\"]?[^'\"\s#]{6,}", re.M)),
 ]
 
+# Which rules a file extension can reach. The ids are the ones META defines, so
+# a report can name the detectors that ran instead of only their count. This
+# table must mirror the branches in detect_defects below: coverage that claims a
+# rule ran where none did is the failure this module exists to prevent.
+PY_RULE_IDS = tuple(sorted(rule for rule in META if rule.startswith("py-")))
+JVM_RULE_IDS = (
+    "jvm-exec-injection", "jvm-sql-injection", "jvm-empty-catch",
+    "jvm-weak-hash", "jvm-object-input-stream",
+) + tuple(rule for rule, _ in SECRET_PATTERNS)
+CONFIG_RULE_IDS = tuple(rule for rule, _ in CONFIG_SECRETS)
+
 
 def _line_hits(text, patterns):
     lines = text.split("\n")
@@ -198,6 +209,61 @@ JS_RULES = [
     ("js-secret-stripe", re.compile(r"\bsk_live_[0-9A-Za-z]{16,}")),
     ("js-dangerous-html", re.compile(r"dangerouslySetInnerHTML\s*=\s*\{\{")),
 ]
+
+JS_RULE_IDS = tuple(rule for rule, _ in JS_RULES)
+
+
+def rule_ids_for_ext(ext):
+    """Rule ids the detector can emit for one extension; empty means none.
+
+    Every branch in detect_defects has an entry here. A language whose files
+    all return an empty tuple has no detector, which is reported instead of
+    being read as "scanned and clean".
+    """
+    if ext in PY_EXT:
+        return PY_RULE_IDS
+    if ext in JS_EXT:
+        return JS_RULE_IDS
+    if ext in JVM_EXT:
+        return JVM_RULE_IDS
+    if ext in SECRET_EXTS:
+        return CONFIG_RULE_IDS
+    return ()
+
+
+def rule_coverage(files):
+    """Per-language rule coverage for the files actually scanned.
+
+    `files_with_rules` counts files a detector can read, not rules that fired.
+    The two differ on purpose: a language can have detectors and still produce
+    no finding, which is a result; a language with no detector is a blind spot,
+    which is not.
+    """
+    from .lang import EXT_LANG
+
+    by_lang = {}
+    for f in files:
+        lang = EXT_LANG.get(f["ext"])
+        if lang is None:
+            continue
+        slot = by_lang.setdefault(
+            lang, {"lang": lang, "files": 0, "files_with_rules": 0, "rules": set()})
+        slot["files"] += 1
+        ids = rule_ids_for_ext(f["ext"])
+        if ids:
+            slot["files_with_rules"] += 1
+            slot["rules"].update(ids)
+
+    rows = []
+    for slot in by_lang.values():
+        rows.append({
+            "lang": slot["lang"],
+            "files": slot["files"],
+            "files_with_rules": slot["files_with_rules"],
+            "rules": sorted(slot["rules"]),
+        })
+    rows.sort(key=lambda e: (-e["files"], e["lang"]))
+    return {"by_language": rows}
 
 
 def _js_defects(text):
