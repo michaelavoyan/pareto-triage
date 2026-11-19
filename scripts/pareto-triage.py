@@ -536,6 +536,11 @@ def cmd_context(positional, flags):
         "population": summary["population"],
         "kept": summary["emitted"],
         "per_file": summary["per_file"],
+        "judgeable": {
+            "candidates": summary["judgeable_candidates"],
+            "filtered": summary["judgeable_filtered"],
+            "fallback": summary["judgeable_fallback"],
+        },
     }
     sample_path = out_dir / "sample.json"
     sample_path.write_text(json.dumps(sample_payload, indent=2) + "\n", encoding="utf-8")
@@ -567,6 +572,20 @@ def cmd_context(positional, flags):
     print("sample     %s, seed %d: kept %s of %s candidates, max %d per file"
           % (order, seed, num(summary["emitted"]), num(summary["population"]),
              summary["per_file"]))
+    print("judgeable  %s of %s candidates (%d%%) have a failure surface and 4+ non-blank lines; "
+          "%s filtered from the sample"
+          % (num(summary["judgeable_candidates"]), num(summary["candidates"]),
+             100 * summary["judgeable_candidates"] // max(summary["candidates"], 1),
+             num(summary["judgeable_filtered"])))
+    if summary["judgeable_fallback"]:
+        if summary["judgeable_candidates"] < summary["limit"]:
+            print("warning    only %s judgeable site(s) for a limit of %s: kept %s "
+                  "non-judgeable site(s) from the ranked fallback"
+                  % (num(summary["judgeable_candidates"]), num(summary["limit"]),
+                     num(summary["judgeable_fallback"])))
+        else:
+            print("fallback   per-file caps left the sample short: kept %s non-judgeable "
+                  "site(s) in ranked order" % num(summary["judgeable_fallback"]))
     print("           rule findings cover every file; this is a sample only for judgment")
     if order == "ranked":
         print("selection  reach → inbound edges → body size, max %d per file"

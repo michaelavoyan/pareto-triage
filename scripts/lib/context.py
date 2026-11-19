@@ -1032,6 +1032,49 @@ def _body_lines(site):
     return site["lines"][1] - site["lines"][0] + 1
 
 
+JUDGEABLE_MIN_LINES = 4
+
+# A site with a failure surface has something a phase-2 judgment can be about:
+# an error path, an async boundary, a network call, a write, or a loop. Labels
+# are reported, so a measurement can say which surface was found.
+FAILURE_SURFACE_PATTERNS = (
+    ("try/catch", re.compile(r"\b(?:try|catch)\b")),
+    ("async", re.compile(r"\b(?:await|suspend|withContext)\b")),
+    ("network", re.compile(
+        r"\b(?:fetch|axios|urlopen|HttpClient|HttpURLConnection|HttpRequest|"
+        r"OkHttpClient|WebClient|Retrofit|URLConnection|openConnection|newCall|"
+        r"requests\.(?:get|post|put|patch|delete)|Socket|socket)\b"
+        r"|https?://|wss?://")),
+    ("db write", re.compile(r"\b(?:insert|update|delete|execute)\b|\brun\s*\(", re.I)),
+    ("loop", re.compile(r"\b(?:for|while)\b|\bdo\s*\{|\.forEach\b|\brepeat\s*\(")),
+)
+
+
+def body_size(site):
+    """Non-blank lines in the body the site records."""
+    return sum(1 for line in (site.get("source") or "").split("\n") if line.strip())
+
+
+def failure_surface(site):
+    """Labels of the failure-surface constructs in a site's body.
+
+    Mechanical only: it says `try` or `newCall` appears, not that the code
+    handles failures well. That judgment is what phase 2 exists to make.
+    """
+    body = site.get("source") or ""
+    return [label for label, pattern in FAILURE_SURFACE_PATTERNS if pattern.search(body)]
+
+
+def is_judgeable(site):
+    """Worth a phase-2 judgment: enough body to read, and something to fail.
+
+    Sites of three lines or fewer are declarations, one-liners, or plumbing;
+    phase 2 can only restate them. Without a failure surface there is nothing
+    to judge even in a long body.
+    """
+    return body_size(site) >= JUDGEABLE_MIN_LINES and bool(failure_surface(site))
+
+
 def _ordered_sites(candidates, inbound):
     """The ranked selection order: reach, inbound edges, body size, then path.
 
@@ -1064,39 +1107,51 @@ def _permutation(size, seed):
     return pool
 
 
-def _select_indexed(ordered, limit, per_file):
-    """Return (selected, indexes) from an already ordered candidate list."""
-    selected = []
-    indexes = set()
-    per_file_count = {}
-    for index, site in enumerate(ordered):
-        if per_file_count.get(site["file"], 0) >= per_file:
+def _fill_selection(indexes, ranked, limit, per_file, selected=None, counts=None):
+    """Walk `indexes` in order, adding sites while the per-file cap and limit hold.
+
+    Returns the selected ranked-index list and the per-file counts, so a
+    fallback pass can continue where this one stopped.
+    """
+    selected = list(selected or [])
+    counts = dict(counts or {})
+    for index in indexes:
+        site = ranked[index]
+        if counts.get(site["file"], 0) >= per_file:
             continue
-        per_file_count[site["file"]] = per_file_count.get(site["file"], 0) + 1
-        selected.append(site)
-        indexes.add(index)
+        counts[site["file"]] = counts.get(site["file"], 0) + 1
+        selected.append(index)
         if len(selected) >= limit:
             break
-    return selected, indexes
+    return selected, counts
 
 
 def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT,
                  per_file=MAX_SITES_PER_FILE, order=DEFAULT_SAMPLE_ORDER,
-                 seed=DEFAULT_SEED):
+                 seed=DEFAULT_SEED, judgeable=False):
     """Pick the sites worth judging. See `select_sites_with_remainder`."""
-    selected, _ = select_sites_with_remainder(
-        candidates, inbound, limit=limit, per_file=per_file, order=order, seed=seed)
+    selected, _, _ = select_sites_with_remainder(
+        candidates, inbound, limit=limit, per_file=per_file, order=order,
+        seed=seed, judgeable=judgeable)
     return selected
 
 
 def select_sites_with_remainder(candidates, inbound, limit=MAX_SITES_DEFAULT,
                                 per_file=MAX_SITES_PER_FILE,
-                                order=DEFAULT_SAMPLE_ORDER, seed=DEFAULT_SEED):
-    """Return (selected, population) where the population starts with `selected`.
+                                order=DEFAULT_SAMPLE_ORDER, seed=DEFAULT_SEED,
+                                judgeable=False):
+    """Return (selected, population, plan) where the population starts with `selected`.
 
     `random` shuffles the ranked candidate list with `seed`, then applies the
     per-file cap and the limit. `ranked` walks the old order. Either way the
     walk that fills the cap is a single pass, so the per-file cap holds.
+
+    With `judgeable`, only sites `is_judgeable` accepts fill the cap. The filter
+    is applied here, in the sampling step, and never to the population: the
+    remainder still lists every candidate, filtered or not, because
+    `candidates.jsonl` is the population, not the sample. When fewer judgeable
+    sites exist than the limit, the cap is filled from the non-judgeable
+    remainder in ranked order and `plan["fallback"]` says how many.
 
     The order is the contract for `out/candidates.jsonl`: the first
     `len(selected)` records are exactly what `context.jsonl` would emit, and
@@ -1106,20 +1161,42 @@ def select_sites_with_remainder(candidates, inbound, limit=MAX_SITES_DEFAULT,
     ranked = _ordered_sites(candidates, inbound)
     if order == "random":
         permutation = _permutation(len(ranked), seed)
-        ordered = [ranked[index] for index in permutation]
     elif order == "ranked":
         permutation = None
-        ordered = ranked
     else:
         raise ValueError("unknown sample order: %r" % (order,))
 
-    selected, indexes = _select_indexed(ordered, limit, per_file)
-    if permutation is None:
-        taken = set(indexes)
+    if judgeable:
+        eligible = [index for index, site in enumerate(ranked) if is_judgeable(site)]
     else:
-        taken = {permutation[index] for index in indexes}
-    remainder = [site for index, site in enumerate(ranked) if index not in taken]
-    return selected, selected + remainder
+        eligible = list(range(len(ranked)))
+
+    if permutation is None:
+        ordered_indexes = eligible
+    else:
+        allowed = set(eligible)
+        ordered_indexes = [index for index in permutation if index in allowed]
+
+    selected_indexes, counts = _fill_selection(ordered_indexes, ranked, limit, per_file)
+
+    fallback = 0
+    if judgeable and len(selected_indexes) < limit:
+        eligible_set = set(eligible)
+        remainder = (index for index in range(len(ranked)) if index not in eligible_set)
+        before = len(selected_indexes)
+        selected_indexes, counts = _fill_selection(
+            remainder, ranked, limit, per_file, selected=selected_indexes, counts=counts)
+        fallback = len(selected_indexes) - before
+
+    selected = [ranked[index] for index in selected_indexes]
+    taken = set(selected_indexes)
+    rest = [site for index, site in enumerate(ranked) if index not in taken]
+    plan = {
+        "judgeable": len(eligible),
+        "filtered": len(ranked) - len(eligible),
+        "fallback": fallback,
+    }
+    return selected, selected + rest, plan
 
 
 def extract_sites_collapse(candidates, include_enclosing=False):
@@ -1239,9 +1316,9 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
     inbound = inbound_counts(files)
     total = len(judged)
     per_file = max(3, min(MAX_SITES_PER_FILE, max_sites // 5))
-    selected, population = select_sites_with_remainder(judged, inbound, limit=max_sites,
-                                                       per_file=per_file, order=order,
-                                                       seed=seed)
+    selected, population, plan = select_sites_with_remainder(
+        judged, inbound, limit=max_sites, per_file=per_file, order=order,
+        seed=seed, judgeable=True)
     chosen = population if all_sites else selected
 
     sites = []
@@ -1264,6 +1341,9 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
         "unreachable_source_files": unreachable_files,
         "trivial_excluded": len(trivial),
         "test_files_excluded": test_files,
+        "judgeable_candidates": plan["judgeable"],
+        "judgeable_filtered": plan["filtered"],
+        "judgeable_fallback": plan["fallback"],
     }
     return sites, summary
 

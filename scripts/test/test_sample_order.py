@@ -113,7 +113,9 @@ class SampleOrderTests(unittest.TestCase):
         result = self.context("--sample-order", "ranked", "--seed", "9")
         payload = json.loads((self.out / "sample.json").read_text())
         self.assertEqual(payload, {"mode": "ranked", "seed": 9,
-                                   "population": 10, "kept": 5, "per_file": 3})
+                                   "population": 10, "kept": 5, "per_file": 3,
+                                   "judgeable": {"candidates": 10, "filtered": 0,
+                                                 "fallback": 0}})
 
         self.assertIn("sample     ranked, seed 9: kept 5 of 10 candidates, max 3 per file",
                       result.stdout)
