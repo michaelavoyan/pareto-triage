@@ -79,6 +79,59 @@ def verdict_sentence(shape_info):
     )
 
 
+def attribution_sentences(attribution, verdict):
+    """Say which class carries the concentration, and whether judgment alone could.
+
+    A verdict produced by 62 empty-catch hits is a rule result. Printing it
+    without this sentence would present a detector's work as a model
+    conclusion.
+    """
+    block = attribution or {}
+    defect = block.get("defect") or {}
+    failure_mode = block.get("failure_mode") or {}
+    defect_clusters = defect.get("clusters", 0)
+    mode_clusters = failure_mode.get("clusters", 0)
+    defect_top = defect.get("top") or {}
+    mode_top = failure_mode.get("top") or {}
+
+    sentences = []
+    if defect_clusters and not mode_clusters:
+        sentences.append("All of the concentration comes from rule findings; "
+                         "judgment produced no clusters.")
+    elif mode_clusters and not defect_clusters:
+        sentences.append("All of the concentration comes from judgment; "
+                         "no rule findings were recorded.")
+    elif defect_clusters and mode_clusters:
+        defect_share = defect_top.get("share", 0.0)
+        mode_share = mode_top.get("share", 0.0)
+        if defect_top.get("impact", 0.0) == 0:
+            sentences.append("None of the concentration comes from rule findings; "
+                             "all of it comes from judgment.")
+        elif mode_top.get("impact", 0.0) == 0:
+            sentences.append("None of the concentration comes from judgment; "
+                             "all of it comes from rule findings.")
+        elif round(100 * defect_share) == 0:
+            sentences.append("Less than 1% of the concentration comes from rule findings; "
+                             "the rest comes from judgment.")
+        elif round(100 * mode_share) == 0:
+            sentences.append("Less than 1% of the concentration comes from judgment; "
+                             "the rest comes from rule findings.")
+        else:
+            defect_pct = int(round(100 * defect_share))
+            sentences.append("%d%% of the concentration comes from rule findings, %d%% from judgment."
+                             % (defect_pct, 100 - defect_pct))
+
+    rule_findings = defect.get("findings", 0)
+    if (mode_clusters and failure_mode.get("verdict") == "insufficient"
+            and verdict in ("moderate", "shortcut")):
+        sentences.append("Judgment alone would be insufficient at %d %s; this verdict is carried "
+                         "by %d rule %s."
+                         % (mode_clusters, "cluster" if mode_clusters == 1 else "clusters",
+                            rule_findings, "finding" if rule_findings == 1 else "findings"))
+
+    return sentences
+
+
 def render(ranked, scope):
     shape_info = ranked["shape"]
     quadrant = ranked["quadrant"]
@@ -111,6 +164,8 @@ def render(ranked, scope):
     out.append("<h2>Shape</h2>")
     out.append("<p class=\"verdict %s\">%s</p>" % (_e(shape_info["verdict"]),
                                                    _e(verdict_sentence(shape_info))))
+    for sentence in attribution_sentences(ranked.get("attribution"), shape_info["verdict"]):
+        out.append("<p class=\"meta attribution\">%s</p>" % _e(sentence))
 
     # 2. Curve
     out.append("<h2>Curve — cumulative impact per unit of effort</h2>")

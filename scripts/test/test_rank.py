@@ -11,7 +11,7 @@ CLI = SCRIPTS / "pareto-triage.py"
 FIXTURES = SCRIPTS.parent / "fixtures"
 
 sys.path.insert(0, str(SCRIPTS))
-from lib.score import annotate, cluster_findings, shape, quadrant  # noqa: E402
+from lib.score import annotate, cluster_findings, shape, quadrant, attribution  # noqa: E402
 
 
 def run(args):
@@ -98,6 +98,76 @@ class ScoringTests(unittest.TestCase):
         ]
         result = quadrant(items)
         self.assertEqual(result["counts"], {"quick_wins": 1, "batch_2": 1, "free": 1, "skip": 1})
+
+
+class AttributionTests(unittest.TestCase):
+    """The verdict must say which class carries the concentration."""
+
+    @staticmethod
+    def cluster(key, klass, impact, sites=1):
+        return {
+            "key": key,
+            "class": klass,
+            "taxonomy": "code-injection" if klass == "defect" else "missing-timeout",
+            "n_sites": sites,
+            "impact": impact,
+            "effort": 1.0,
+            "priority": impact,
+            "findings": [key + "_1"],
+            "message": key,
+            "file": "a.py",
+            "line": 1,
+        }
+
+    def mixed(self):
+        clusters = [self.cluster("d0", "defect", 4.0, sites=3)]
+        clusters += [self.cluster("d%d" % i, "defect", 1.0) for i in range(1, 6)]
+        clusters += [self.cluster("f0", "failure-mode", 3.0, sites=2)]
+        clusters += [self.cluster("f%d" % i, "failure-mode", 1.0) for i in range(1, 4)]
+        return clusters
+
+    def test_mixed_set_splits_total_and_top_set_by_class(self):
+        clusters = self.mixed()
+        info = attribution(clusters, shape(clusters))
+
+        self.assertEqual(info["defect"]["clusters"], 6)
+        self.assertEqual(info["failure_mode"]["clusters"], 4)
+        self.assertEqual(info["defect"]["findings"], 8)
+        self.assertEqual(info["failure_mode"]["findings"], 5)
+        self.assertAlmostEqual(info["defect"]["share"], 0.6)
+        self.assertAlmostEqual(info["failure_mode"]["share"], 0.4)
+        # Ten clusters means the C20 top set is two clusters: d0 (4.0) and f0 (3.0).
+        self.assertEqual(info["top_n"], 2)
+        self.assertEqual(info["defect"]["top"]["clusters"], 1)
+        self.assertEqual(info["failure_mode"]["top"]["clusters"], 1)
+        self.assertAlmostEqual(info["defect"]["top"]["share"], round(4.0 / 7.0, 3))
+        self.assertAlmostEqual(info["failure_mode"]["top"]["share"], round(3.0 / 7.0, 3))
+        self.assertAlmostEqual(info["defect"]["top"]["share"] + info["failure_mode"]["top"]["share"], 1.0)
+
+    def test_all_rule_set_puts_every_share_on_defects(self):
+        clusters = [self.cluster("d%d" % i, "defect", 2.0) for i in range(5)]
+        info = attribution(clusters, shape(clusters))
+        self.assertEqual(info["failure_mode"]["clusters"], 0)
+        self.assertEqual(info["failure_mode"]["impact"], 0.0)
+        self.assertEqual(info["defect"]["share"], 1.0)
+        self.assertEqual(info["defect"]["top"]["share"], 1.0)
+        self.assertEqual(info["failure_mode"]["verdict"], "empty")
+
+    def test_all_judgment_set_puts_every_share_on_failure_modes(self):
+        clusters = [self.cluster("f%d" % i, "failure-mode", 2.0) for i in range(5)]
+        info = attribution(clusters, shape(clusters))
+        self.assertEqual(info["defect"]["clusters"], 0)
+        self.assertEqual(info["defect"]["impact"], 0.0)
+        self.assertEqual(info["failure_mode"]["share"], 1.0)
+        self.assertEqual(info["failure_mode"]["top"]["share"], 1.0)
+        self.assertEqual(info["defect"]["verdict"], "empty")
+
+    def test_class_verdict_is_computed_on_that_class_alone(self):
+        clusters = [self.cluster("d%d" % i, "defect", 5.0 - i) for i in range(3)]
+        clusters += [self.cluster("f0", "failure-mode", 1.0)]
+        info = attribution(clusters, shape(clusters))
+        self.assertNotEqual(info["defect"]["verdict"], "insufficient")
+        self.assertEqual(info["failure_mode"]["verdict"], "insufficient")
 
 
 class RankPipelineTests(unittest.TestCase):

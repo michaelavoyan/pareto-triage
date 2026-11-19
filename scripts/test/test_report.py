@@ -12,8 +12,8 @@ CLI = SCRIPTS / "pareto-triage.py"
 FIXTURES = SCRIPTS.parent / "fixtures"
 
 sys.path.insert(0, str(SCRIPTS))
-from lib.render import render  # noqa: E402
-from lib.score import curve_markers  # noqa: E402
+from lib.render import render, attribution_sentences  # noqa: E402
+from lib.score import curve_markers, shape, attribution  # noqa: E402
 
 
 def run(args):
@@ -262,6 +262,106 @@ class InsufficientShapeTests(unittest.TestCase):
         self.assertIn("Verdict not meaningful: 2 clusters are too few to judge shape", html)
         self.assertNotIn("There is a shortcut here.", html)
         self.assertNotIn('class="verdict shortcut"', html)
+
+
+class AttributionReportTests(unittest.TestCase):
+    """The shape section must name what carries the verdict."""
+
+    @staticmethod
+    def cluster(key, klass, impact, sites=1):
+        return {
+            "key": key,
+            "class": klass,
+            "taxonomy": "code-injection" if klass == "defect" else "missing-timeout",
+            "n_sites": sites,
+            "impact": impact,
+            "effort": 1.0,
+            "priority": impact,
+            "findings": [key + "_1"],
+            "message": key,
+            "file": "a.py",
+            "line": 1,
+        }
+
+    @classmethod
+    def ranked(cls, clusters):
+        info = shape(clusters)
+        findings = []
+        for cluster in clusters:
+            for finding_id in cluster["findings"]:
+                findings.append({
+                    "id": finding_id, "taxonomy": cluster["taxonomy"],
+                    "class": cluster["class"], "file": "a.py", "line": 1,
+                    "evidence": "await chargeCard(amount)", "reach": 5,
+                    "blast": 5, "silence": 3, "effort": 1,
+                    "impact": cluster["impact"], "priority": cluster["impact"],
+                    "confidence": "high", "effort_drivers": ["1 file", "0 importers"],
+                })
+        return {
+            "repo_name": "r", "tool_version": "0.4.1", "generated_at": "now",
+            "confidence_cap": None, "confidence_cap_reason": None,
+            "shape": info, "attribution": attribution(clusters, info),
+            "quadrant": {"counts": {"quick_wins": 0, "batch_2": 0, "free": 0, "skip": 0}},
+            "curve": [], "curve_markers": [], "coverage": {}, "clusters": clusters,
+            "findings": findings, "blocking_security": [],
+            "could_not_determine": ["x"], "redactions": [],
+        }
+
+    @staticmethod
+    def render(ranked):
+        return render(ranked, {"root": ".", "entrypoints": [], "tests": {"present": True}})
+
+    def test_all_rule_case_says_judgment_produced_no_clusters(self):
+        clusters = [self.cluster("d%d" % i, "defect", 2.0) for i in range(5)]
+        html = self.render(self.ranked(clusters))
+        self.assertIn("All of the concentration comes from rule findings; "
+                      "judgment produced no clusters.", html)
+
+    def test_all_judgment_case_says_no_rule_findings_were_recorded(self):
+        clusters = [self.cluster("f%d" % i, "failure-mode", 2.0) for i in range(5)]
+        html = self.render(self.ranked(clusters))
+        self.assertIn("All of the concentration comes from judgment; "
+                      "no rule findings were recorded.", html)
+
+    def test_mixed_case_prints_the_two_shares(self):
+        block = {
+            "defect": {"clusters": 6, "findings": 8, "impact": 9.0, "share": 0.6,
+                       "top": {"clusters": 1, "impact": 6.2, "share": 0.62},
+                       "verdict": "shortcut"},
+            "failure_mode": {"clusters": 4, "findings": 5, "impact": 6.0, "share": 0.4,
+                             "top": {"clusters": 1, "impact": 3.8, "share": 0.38},
+                             "verdict": "moderate"},
+            "c20": 0.66, "top_n": 2, "top_impact": 10.0,
+        }
+        self.assertEqual(
+            attribution_sentences(block, "shortcut"),
+            ["62% of the concentration comes from rule findings, 38% from judgment."])
+
+    def test_judgment_alone_insufficient_names_the_rule_carriers(self):
+        clusters = [self.cluster("d0", "defect", 8.0)]
+        clusters += [self.cluster("d%d" % i, "defect", 1.0) for i in (1, 2)]
+        clusters += [self.cluster("f%d" % i, "failure-mode", 1.0) for i in (0, 1)]
+        ranked = self.ranked(clusters)
+        self.assertEqual(ranked["shape"]["verdict"], "shortcut")
+        self.assertEqual(ranked["attribution"]["failure_mode"]["verdict"], "insufficient")
+        html = self.render(ranked)
+        self.assertIn("Judgment alone would be insufficient at 2 clusters; "
+                      "this verdict is carried by 3 rule findings.", html)
+
+    def test_report_json_carries_the_attribution_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            pipeline(FIXTURES / "express-app", out)
+            result = run(["report", FIXTURES / "express-app", "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            published = json.loads((out / "report.json").read_text())
+
+        block = published["attribution"]
+        self.assertEqual(set(block), {"defect", "failure_mode", "c20", "top_n", "top_impact"})
+        for name in ("defect", "failure_mode"):
+            self.assertEqual(set(block[name]),
+                             {"clusters", "findings", "impact", "share", "top", "verdict"})
+            self.assertEqual(set(block[name]["top"]), {"clusters", "impact", "share"})
 
 
 if __name__ == "__main__":

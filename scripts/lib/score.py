@@ -111,6 +111,52 @@ def shape(clusters):
     }
 
 
+CLASS_LABELS = (("defect", "defect"), ("failure-mode", "failure_mode"))
+
+
+def attribution(clusters, shape_info=None):
+    """Impact by finding class, both overall and inside the C20 top set.
+
+    The verdict is a property of the cluster set, not of one detector. When the
+    top fifth is one rule cluster, the concentration is a rule result and must
+    not be reported as a model conclusion. `share` is of total impact; the
+    nested `top.share` is of the top-set impact, so it is the share of C20 that
+    the class carries.
+    """
+    info = shape_info if shape_info is not None else shape(clusters)
+    top_keys = set(info.get("top_keys") or [])
+    if not top_keys and clusters:
+        top_n = max(1, math.ceil(0.2 * len(clusters)))
+        top_keys = {c["key"] for c in sorted(clusters, key=lambda c: -c["impact"])[:top_n]}
+
+    total = sum(c["impact"] for c in clusters)
+    top_total = sum(c["impact"] for c in clusters if c["key"] in top_keys)
+
+    block = {}
+    for class_name, block_name in CLASS_LABELS:
+        items = [c for c in clusters if c.get("class") == class_name]
+        top_items = [c for c in items if c["key"] in top_keys]
+        impact = sum(c["impact"] for c in items)
+        top_impact = sum(c["impact"] for c in top_items)
+        block[block_name] = {
+            "clusters": len(items),
+            "findings": sum(c.get("n_sites", 0) for c in items),
+            "impact": round(impact, 4),
+            "share": round(impact / total, 3) if total else 0.0,
+            "top": {
+                "clusters": len(top_items),
+                "impact": round(top_impact, 4),
+                "share": round(top_impact / top_total, 3) if top_total else 0.0,
+            },
+            "verdict": shape(items)["verdict"],
+        }
+
+    block["c20"] = info.get("c20", 0.0)
+    block["top_n"] = info.get("top_n", 0)
+    block["top_impact"] = round(top_total, 4)
+    return block
+
+
 DEFAULT_BUDGETS = (5, 15, 30)
 BUDGET_LABELS = ("S", "M", "L")
 
