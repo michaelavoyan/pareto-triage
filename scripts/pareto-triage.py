@@ -12,12 +12,12 @@ import sys
 from pathlib import Path
 
 from lib.walk import walk, count_loc
-from lib.lang import (SUPPORTED_LABEL, frameworks, languages, read_manifests,
-                      split_supported, test_runner)
+from lib.lang import (SUPPORTED_LABEL, frameworks, language_label, languages,
+                      read_manifests, split_supported, test_runner)
 from lib.entry import (extract_entrypoints, entrypoint_counts,
                        filter_entrypoints_by_language, ENTRY_LANGUAGE_FLOOR)
 from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
-from lib.rules import detect_defects
+from lib.rules import detect_defects, rule_coverage
 from lib.imports import compute_reach, entry_paths, read_aliases, seeds_from_entrypoints
 from lib.context import (extract_sites, load_sites, site_contains, MAX_SITES_DEFAULT,
                          MAX_SOURCE_LINES, SAMPLE_ORDERS, DEFAULT_SAMPLE_ORDER, DEFAULT_SEED)
@@ -263,6 +263,37 @@ def _ignored_languages(ignored):
                      for entry in ignored)
 
 
+def _unruled_languages(coverage, supported):
+    """Supported languages with scanned files but no detector.
+
+    Unsupported languages are excluded: they already have a warning of their
+    own. The question here is whether a language this tool claims to support
+    was actually examined, not whether a language it does not support was.
+    """
+    return [row for row in coverage.get("by_language", [])
+            if row["lang"] in supported and row["files_with_rules"] == 0]
+
+
+def _unruled_sentence(row):
+    return ("no rules were applied to %s file%s of %s"
+            % (num(row["files"]), "" if row["files"] == 1 else "s",
+               language_label(row["lang"])))
+
+
+def _print_rule_coverage(coverage):
+    """Say which languages a detector read, not only how many findings fell out."""
+    rows = coverage.get("by_language") or []
+    for index, row in enumerate(rows):
+        prefix = "rules      " if index == 0 else "           "
+        if row["files_with_rules"]:
+            detail = "%d/%d files (%d rule%s)" % (
+                row["files_with_rules"], row["files"], len(row["rules"]),
+                "" if len(row["rules"]) == 1 else "s")
+        else:
+            detail = "%d/%d files (no rules)" % (row["files_with_rules"], row["files"])
+        print("%s%-12s %s" % (prefix, row["lang"], detail))
+
+
 def cmd_gate(positional, flags):
     repo, out_dir = _paths(positional, flags)
     raw_min = flags.get("min-loc", MIN_LOC_DEFAULT)
@@ -284,6 +315,8 @@ def cmd_gate(positional, flags):
     by_lang = languages(files)
     supported, unsupported = split_supported(by_lang)
     supported_loc = sum(entry["loc"] for entry in supported)
+    coverage = rule_coverage(files)
+    unruled = _unruled_languages(coverage, {entry["lang"] for entry in supported})
 
     manifests = read_manifests(walked["root"])
     fw = frameworks(manifests)
@@ -320,6 +353,9 @@ def cmd_gate(positional, flags):
     if unsupported:
         warnings.append("%d unsupported language(s) present and ignored: %s"
                         % (len(unsupported), ", ".join(e["lang"] for e in unsupported)))
+    for row in unruled:
+        warnings.append("%s — these files are unassessed, not clean"
+                        % _unruled_sentence(row))
     if walked["truncated"]:
         warnings.append("stopped after %s files" % num(len(files)))
     if walked["skipped"]:
@@ -350,6 +386,7 @@ def cmd_gate(positional, flags):
             "supported": [e["lang"] for e in supported],
             "unsupported": [e["lang"] for e in unsupported],
         },
+        "rule_coverage": coverage,
         "frameworks": fw,
         "tests": tests,
         "entrypoint_kinds": counts,
@@ -641,6 +678,8 @@ def cmd_detect(positional, flags):
 
     walked = walk(repo)
     aliases = read_aliases(repo)
+    coverage = scope.get("rule_coverage") or rule_coverage(walked["files"])
+    unruled = _unruled_languages(coverage, set(scope["languages"]["supported"]))
     findings, warnings = detect_defects(walked["files"])
 
     entry_files = {e["file"] for e in scope["entrypoints"]}
@@ -680,6 +719,7 @@ def cmd_detect(positional, flags):
 
     print("pareto-triage %s — detect" % VERSION)
     print("files      %s scanned" % num(len(walked["files"])))
+    _print_rule_coverage(coverage)
     print("findings   %d" % len(findings))
     for taxonomy, count in sorted(by_taxonomy.items(), key=lambda kv: -kv[1]):
         print("  %-28s %d" % (taxonomy, count))
@@ -694,6 +734,9 @@ def cmd_detect(positional, flags):
     _print_swift_notes(reach_meta)
     for warning in warnings:
         print("warning    %s: %s" % (warning["path"], warning["reason"]))
+    for row in unruled:
+        print("warning    %s — these files are unassessed, not clean"
+              % _unruled_sentence(row))
     print("")
     print("wrote %s" % target)
     return 0
@@ -873,6 +916,13 @@ def cmd_rank(positional, flags):
     markers = curve_markers(clusters, budgets)
     pareto = pareto_point(clusters)
     ladder = pareto_ladder(clusters)
+    if shape_info["verdict"] == "insufficient":
+        # The arithmetic can still produce a cheap-looking prefix at two
+        # clusters. Nothing about that prefix is evidence, so the ladder and
+        # the headline are not allowed to say "shortcut".
+        for row in ladder:
+            row["shortcut"] = False
+        pareto = dict(pareto, shortcut=False, insufficient=True)
 
     input_hash = hashlib.sha256(
         "\n".join(json.dumps(f, sort_keys=True) for f in sorted(findings, key=lambda x: x["id"])).encode("utf-8")
@@ -881,6 +931,9 @@ def cmd_rank(positional, flags):
     blocking = [c for c in clusters if c["taxonomy"] in
                 ("missing-authz", "sql-injection", "command-injection", "code-injection",
                  "unsafe-deserialization", "hardcoded-secret", "tls-verification-disabled")]
+
+    rule_rows = (scope.get("rule_coverage") or rule_coverage(walked["files"]))["by_language"]
+    supported_langs = set(scope["languages"]["supported"])
 
     could_not_determine = []
     if failure_modes is None:
@@ -906,6 +959,20 @@ def cmd_rank(positional, flags):
         could_not_determine.append(
             "ignored languages: %s. Findings there are not counted, which lowers impact."
             % ", ".join(ignored))
+    for row in rule_rows:
+        if row["lang"] not in supported_langs:
+            continue
+        label = language_label(row["lang"])
+        if row["files_with_rules"] == 0:
+            could_not_determine.append(
+                "%s: the tool has no %s defect rules, so this report says nothing about "
+                "defects in them." % (_unruled_sentence(row), label))
+        elif row["files_with_rules"] < row["files"]:
+            could_not_determine.append(
+                "rules cover %d of %d files of %s: the remaining %d have no detector and "
+                "are unassessed, not clean."
+                % (row["files_with_rules"], row["files"], label,
+                   row["files"] - row["files_with_rules"]))
     if not scope["tests"]["present"]:
         could_not_determine.append(
             "no test runner detected: no fix can be verified, and effort bands assume no test work exists.")
@@ -934,6 +1001,7 @@ def cmd_rank(positional, flags):
             "sites_judged": coverage["sites_judged"],
             "sites_unjudged": coverage["sites_unjudged"],
         },
+        "rule_coverage": {"by_language": rule_rows},
         "shape": shape_info,
         "quadrant": quad,
         "curve": curve,
@@ -963,8 +1031,14 @@ def cmd_rank(positional, flags):
         print("dedupe     %d duplicate(s) dropped: %s"
               % (len(duplicates), ", ".join(duplicates[:5]) + ("…" if len(duplicates) > 5 else "")))
     print("clusters   %d" % len(clusters))
-    print("shape      %s — C20 %.0f%% (top %d of %d carry that share of impact)"
-          % (shape_info["verdict"], 100 * shape_info["c20"], shape_info["top_n"], shape_info["n_clusters"]))
+    if shape_info["verdict"] == "insufficient":
+        print("shape      insufficient — C20 %.0f%% over %d cluster%s; a shape verdict needs at least %d"
+              % (100 * shape_info["c20"], shape_info["n_clusters"],
+                 "" if shape_info["n_clusters"] == 1 else "s", shape_info["min_clusters"]))
+    else:
+        print("shape      %s — C20 %.0f%% (top %d of %d carry that share of impact)"
+              % (shape_info["verdict"], 100 * shape_info["c20"], shape_info["top_n"],
+                 shape_info["n_clusters"]))
     counts = quad["counts"]
     print("quadrant   %d do now, %d schedule, %d anytime, %d ignore"
           % (counts["quick_wins"], counts["batch_2"], counts["free"], counts["skip"]))

@@ -4,6 +4,8 @@ The tool-verifiable tier. A rule goes in here only if its **presence** at a line
 
 No external scanners are required. Semgrep, CodeQL, tsc, and eslint are stronger tools, but they are also installs, versions, and failures. v1 ships a narrow rule set that always works offline, plus the same finding schema so an external scanner can be added later as an adapter without touching the pipeline.
 
+Swift and Objective-C are not in this file because there are no rules for them. `detect` reports rule coverage per language (`0/9 files (no rules)`) and warns when a supported language had files but no detector; `rank` records that in `could_not_determine`. An empty `detect` result in those languages is unassessed code, not clean code.
+
 ## Rules
 
 ### Python (AST-based, `ast.parse`)

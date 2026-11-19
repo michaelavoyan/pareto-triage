@@ -12,7 +12,8 @@ says "1 file" must be able to point at the file count it used.
 BOUNDARY_MIN = 1
 BOUNDARY_MAX = 5
 
-SOURCE_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py"}
+SOURCE_EXTS = {".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py",
+               ".swift", ".m", ".mm"}
 
 
 def _package_label(rel):

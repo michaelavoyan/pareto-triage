@@ -409,17 +409,20 @@ class ShapeTests(unittest.TestCase):
         sandbox.context()
         sandbox.detect()
         records = [
-            sandbox.finding("handler_{}".format(i), "unbounded-query", 3, 3)
+            sandbox.finding("handler_{}".format(i), "unbounded-query", 5, 3)
             for i in range(5)
         ]
         records.append(sandbox.finding("handler_5", "missing-timeout", 3, 3))
+        # A third cluster keeps the shape verdict meaningful (the rubric needs
+        # at least three); its impact is small enough not to enter the top 20%.
+        records.append(sandbox.finding("handler_2", "no-retry", 1, 1))
         sandbox.failure_modes(records)
         sandbox.rank()
         ranked = sandbox.ranked()
         shape = ranked["shape"]
 
-        self.assertEqual(shape["n_clusters"], 2)
-        # Impact-ordered top set: the 5-site cluster (impact ~4.95) beats the
+        self.assertEqual(shape["n_clusters"], 3)
+        # Impact-ordered top set: the 5-site cluster (impact 5.0) beats the
         # single site (impact 3.0). Priority-ordered it would not, since the
         # big cluster also costs 5.2 effort; c20 must ignore effort.
         self.assertEqual(sorted(shape["top_keys"]), ["unbounded-query"])

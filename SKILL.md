@@ -1,6 +1,6 @@
 ---
 name: pareto-triage
-description: Scan a codebase, rank defects and failure modes by impact-per-effort, and test the Pareto bet — that a few fixes buy most of the robustness. Reports the measured shape of the curve (shortcut, moderate, flat) instead of assuming 80/20. Use when asked to audit a codebase, prioritize fixes, find what to fix first, or assess how robust a project is.
+description: Scan a codebase, rank defects and failure modes by impact-per-effort, and test the Pareto bet — that a few fixes buy most of the robustness. Reports the measured shape of the curve (shortcut, moderate, flat, insufficient) instead of assuming 80/20. Use when asked to audit a codebase, prioritize fixes, find what to fix first, or assess how robust a project is.
 ---
 
 # /pareto-triage
@@ -43,6 +43,8 @@ Phases 0, 0b, 1, 3, 4, and 5 are implemented by the scripts; phase 6 (calibratio
 
 `detect` runs 27 built-in rules that prove a construct exists at a line: eval/exec, `shell=True`, `Runtime.exec`/`ProcessBuilder` with concatenation, unsafe deserialization, SQL string interpolation (Java and Kotlin concatenation included), disabled TLS verification, committed secrets, bare except, empty catch, mutable defaults, debug mode, MD5/SHA-1, XSS sinks. See `references/defect-rules.md`.
 
+There are no Swift or Objective-C defect rules. `detect` prints rule coverage per language and names any supported language no rule could read; `rank` puts `no rules were applied to N files of Swift` (or Objective-C) into "Could not determine". Zero findings there means unassessed, not clean.
+
 Everything requiring judgment — missing timeouts, swallowed errors, missing idempotency, unbounded work — is **not** covered by `detect`. If phase 2 has not run, the report says so in "Could not determine". Do not let a defects-only report read as a full audit.
 
 Phase 2 is the only step where you exercise judgment. Everything else is deterministic. If a score ever depends on your opinion rather than a recorded number, the report stops being reproducible and is worthless.
@@ -78,7 +80,7 @@ A refusal is the exception: when the gate or the merge gate refuses, there is no
 
 ## Output contract
 
-The curve always carries an effort-for-impact ladder: what share of the work buys 50%, 70% and 80% of the impact. Report the row that is true; never replace it with a verdict word.
+The curve always carries an effort-for-impact ladder: what share of the work buys 50%, 70% and 80% of the impact. Report the row that is true; never replace it with a verdict word. The one exception is fewer than three clusters: the verdict is `insufficient`, C20 is arithmetic rather than evidence, and the report omits the ladder. Say that instead of reporting a row.
 
 Report sections, in this fixed order: **Shape** → **Curve** → **Quadrant** → **Top 5** → **Verification** → **Batch plan** → **All findings** → **Could not determine**. See `references/report-format.md`.
 

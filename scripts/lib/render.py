@@ -51,6 +51,9 @@ VERDICT_TEXT = {
     "flat":
         "No shortcut. Impact is spread across {n} clusters — effort tracks impact almost linearly. "
         "Fixing a few will not move the needle.",
+    "insufficient":
+        "Verdict not meaningful: {n} {cluster_word} {verb} too few to judge shape — C20 is {pct} "
+        "by arithmetic, and a verdict needs at least {minimum} clusters.",
     "empty": "No findings. That is a result, not an error — but see what could not be determined.",
 }
 
@@ -65,10 +68,14 @@ def _e(value):
 
 def verdict_sentence(shape_info):
     template = VERDICT_TEXT.get(shape_info["verdict"], VERDICT_TEXT["empty"])
+    count = shape_info.get("n_clusters", 0)
     return template.format(
         top_n=shape_info.get("top_n", 0),
-        n=shape_info.get("n_clusters", 0),
+        n=count,
         pct="%.0f%%" % (100 * shape_info.get("c20", 0.0)),
+        minimum=shape_info.get("min_clusters", 3),
+        cluster_word="cluster" if count == 1 else "clusters",
+        verb="is" if count == 1 else "are",
     )
 
 
@@ -133,7 +140,8 @@ def render(ranked, scope):
             break
     pareto = ranked.get("pareto") or {}
     ladder = ranked.get("pareto_ladder") or []
-    if ladder:
+    insufficient = shape_info.get("verdict") == "insufficient"
+    if ladder and not insufficient:
         rows = [row for row in ladder if row.get("effort_share") is not None]
         if rows:
             out.append("<table><thead><tr><th>Impact covered</th><th class=\"num\">Clusters</th>"
@@ -144,7 +152,7 @@ def render(ranked, scope):
                            % (100 * row["target"], row["clusters"], row["of_clusters"],
                               100 * row["effort_share"]))
             out.append("</tbody></table>")
-    if pareto and pareto.get("effort_share") is not None:
+    if pareto and pareto.get("effort_share") is not None and not insufficient:
         if pareto.get("shortcut"):
             out.append("<p class=\"key\">%d of %d clusters carry %.0f%% of the impact for %.0f%% of the effort.</p>"
                        % (pareto["clusters"], pareto["of_clusters"], 100 * pareto["target"],
@@ -153,6 +161,11 @@ def render(ranked, scope):
             out.append("<p class=\"meta\">%.0f%% of the impact costs %.0f%% of the effort — "
                        "no cheap set, the work tracks the benefit.</p>"
                        % (100 * pareto["target"], 100 * pareto["effort_share"]))
+    if insufficient:
+        count = shape_info.get("n_clusters", 0)
+        out.append("<p class=\"meta\">The effort ladder is omitted: with %d %s a cheap "
+                   "prefix is arithmetic, not evidence.</p>"
+                   % (count, "cluster" if count == 1 else "clusters"))
     out.append("<p class=\"meta\">Effort units are the rubric's ordinal bands summed, not hours. "
                "A flat curve is a finding, not a failure of the tool.</p>")
 

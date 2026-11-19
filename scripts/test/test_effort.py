@@ -75,6 +75,43 @@ class FormulaTests(unittest.TestCase):
     def test_call_profile_returns_none_for_a_route_name(self):
         self.assertIsNone(call_profile("POST /webhooks/stripe", "src/routes.ts", []))
 
+    def test_a_swift_finding_counts_its_call_sites(self):
+        files = [
+            {"rel": "App/Store.swift", "ext": ".swift", "text":
+             "final class Store {\n    func load() {\n        fetch()\n    }\n}\n"},
+            {"rel": "App/Caller.swift", "ext": ".swift", "text":
+             "func a() { load() }\nfunc b() { load() }\nfunc c() { load() }\n"
+             "func d() { load() }\nfunc e() { load() }\nfunc f() { load() }\n"},
+        ]
+        profile = call_profile("load", "App/Store.swift", files)
+        self.assertEqual(profile["callsites"], 6)
+        self.assertEqual(profile["files"], ["App/Caller.swift"])
+
+    def test_a_swift_finding_with_call_sites_rises_above_the_default(self):
+        files = [
+            {"rel": "App/Store.swift", "ext": ".swift", "text":
+             "final class Store {\n    func load() {\n        fetch()\n    }\n}\n"},
+            {"rel": "App/Caller.swift", "ext": ".swift", "text":
+             "func a() { load() }\nfunc b() { load() }\nfunc c() { load() }\n"
+             "func d() { load() }\nfunc e() { load() }\nfunc f() { load() }\n"},
+        ]
+        findings = [{"id": "f_1", "class": "failure-mode",
+                     "file": "App/Store.swift", "line": 2}]
+        apply_efforts(findings, files, no_test=False)
+        # One file, one call site and no test runner is the floor (effort 1).
+        self.assertEqual(findings[0]["effort"], 2)
+        self.assertIn("6 call sites", findings[0]["effort_drivers"])
+
+    def test_objc_source_files_are_counted_too(self):
+        files = [
+            {"rel": "Signal/Store.m", "ext": ".m", "text": "- (void)load {}\n"},
+            {"rel": "Signal/Caller.m", "ext": ".m", "text": "[s load];\n[s load];\n"},
+            {"rel": "Signal/Other.mm", "ext": ".mm", "text": "[s load];\n"},
+        ]
+        profile = call_profile("load", "Signal/Store.m", files)
+        self.assertEqual(profile["callsites"], 3)
+        self.assertIn("Signal/Other.mm", profile["files"])
+
     def test_drivers_never_claim_a_hardcoded_site(self):
         _, drivers = defect_effort("src/a.ts", ["src/b.ts", "src/c.ts"], no_test=False)
         self.assertIn("2 importers", drivers)

@@ -6,6 +6,13 @@ import statistics
 
 REACH_DISCOUNT = {1: 0.25}
 
+# C20 is an impact share of the top fifth of clusters. Below three clusters
+# that fifth is one cluster and the share is arithmetic, not evidence: with a
+# single cluster it is 1.0 by construction, so the report must not call it a
+# shortcut. Three is the smallest count where "the top fifth" leaves anything
+# out of the comparison.
+MIN_CLUSTERS_FOR_VERDICT = 3
+
 
 def annotate(findings):
     """Apply the rubric's reach discount, then impact and priority."""
@@ -61,12 +68,17 @@ def cluster_findings(findings):
 
 
 def shape(clusters):
-    """C20: impact share of the top 20% of clusters, sorted by impact alone."""
+    """C20: impact share of the top 20% of clusters, sorted by impact alone.
+
+    Below MIN_CLUSTERS_FOR_VERDICT the share is arithmetic rather than
+    evidence, so the verdict is `insufficient` and c20 is still reported.
+    """
     if not clusters:
         return {
             "c20": 0.0,
             "verdict": "empty",
             "n_clusters": 0,
+            "min_clusters": MIN_CLUSTERS_FOR_VERDICT,
             "top_n": 0,
             "top_median_effort": 0.0,
             "top_keys": [],
@@ -79,7 +91,9 @@ def shape(clusters):
     c20 = (sum(c["impact"] for c in top) / total) if total else 0.0
     median_effort = sorted(c["effort"] for c in top)[len(top) // 2]
 
-    if c20 >= 0.6:
+    if len(by_impact) < MIN_CLUSTERS_FOR_VERDICT:
+        verdict = "insufficient"
+    elif c20 >= 0.6:
         verdict = "shortcut" if median_effort <= 2.5 else "concentrated-expensive"
     elif c20 >= 0.3:
         verdict = "moderate"
@@ -90,6 +104,7 @@ def shape(clusters):
         "c20": round(c20, 3),
         "verdict": verdict,
         "n_clusters": len(clusters),
+        "min_clusters": MIN_CLUSTERS_FOR_VERDICT,
         "top_n": top_n,
         "top_median_effort": median_effort,
         "top_keys": [c["key"] for c in top],

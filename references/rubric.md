@@ -3,6 +3,7 @@
 Scoring is deterministic. Given the same findings and this document, two people must produce identical rankings. If they do not, the rubric is wrong — fix the rubric, not the scores.
 
 Change log:
+- 1.4.0 — a shape verdict needs at least three clusters; below that C20 is arithmetic, the verdict is `insufficient`, and no `shortcut` is claimed.
 - 1.0.0 — initial. Reach gate, impact = blast × silence / 3, priority = impact / effort, noisy-OR clustering.
 - 1.3.0 — effort budgets S/M/L (5/15/30 units) are defined for the curve markers; no score changes.
 - 1.2.0 — the reach discount (`reach == 1` → impact × 0.25) and the reach-0 drop are enforced in scoring; the 0–5 scale is now produced, not just documented.
@@ -132,6 +133,16 @@ C20 = impact share of the top 20% of clusters (effort ignored when sorting)
 | ≥ 0.60 | mostly effort ≥ 4 | `concentrated-expensive` |
 | 0.30–0.60 | any | `moderate` |
 | < 0.30 | any | `flat` |
+
+A verdict needs **at least three clusters**. Below that the top fifth of the
+clusters is a single cluster, so C20 is not a share of anything: with one
+cluster it is 1.0 by arithmetic, and with two it is whichever one happens to be
+larger. `shape.c20` is still reported as a number, `shape.n_clusters` says how
+many there were, and `shape.verdict` is `insufficient` with
+`shape.min_clusters` = 3. The report says the verdict is not meaningful at that
+cluster count. The Pareto ladder is not printed, and no `shortcut` claim is
+made: when the shape is `insufficient`, every `pareto` and `pareto_ladder` row
+reports `shortcut: false` so the two numbers cannot disagree.
 
 Only `shortcut` justifies "fix these few and stop." `flat` means returns track effort — say so plainly.
 
