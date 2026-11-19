@@ -586,7 +586,7 @@ def cmd_context(positional, flags):
         else:
             print("fallback   per-file caps left the sample short: kept %s non-judgeable "
                   "site(s) in ranked order" % num(summary["judgeable_fallback"]))
-    print("           rule findings cover every file; this is a sample only for judgment")
+    print("           rule findings cover every scanned file; this is a sample only for judgment")
     if order == "ranked":
         print("selection  reach → inbound edges → body size, max %d per file"
               % summary["per_file"])

@@ -14,7 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 from lib.context import select_sites  # noqa: E402
 from lib.render import render  # noqa: E402
 
-SENTENCE = "rule findings cover every file; this is a sample only for judgment"
+SENTENCE = "rule findings cover every scanned file; this is a sample only for judgment"
 
 
 def run(args):
@@ -157,7 +157,7 @@ class ReportSampleTests(unittest.TestCase):
             published = json.loads((out / "report.json").read_text())
 
         self.assertIn("Candidate sites were sampled:", html)
-        self.assertIn("Rule findings cover every file; this is a sample only for judgment.",
+        self.assertIn("Rule findings cover every scanned file; this is a sample only for judgment.",
                       html)
         self.assertEqual(published["sample"]["mode"], "random")
 

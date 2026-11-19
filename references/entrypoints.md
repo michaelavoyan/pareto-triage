@@ -184,7 +184,7 @@ Random is the default because the ranked order was measured and did not beat it 
 ```
 sample     random, seed 0: kept 400 of 5,412 candidates, max 20 per file
 judgeable  2,918 of 5,412 candidates (53%) have a failure surface and 4+ non-blank lines; 2,494 filtered from the sample
-           rule findings cover every file; this is a sample only for judgment
+           rule findings cover every scanned file; this is a sample only for judgment
 ```
 
 Measured on Signal-Android (20,768 candidates, the first 200 of the default sample): 4,341 of 20,768 candidates are judgeable (20.9%). Before the filter, the first 200 held 56 sites of three lines or fewer, 37 with a failure surface (18.5%), a median body of 6 non-blank lines, and 1 network call. After the filter: 0 short sites, 200 with a failure surface (100%), a median body of 15 lines, and 8 network calls. The population and its judgeable count do not change — the filter changes which sites are sampled, not what exists. Phase-2 yield is not re-measured here, because no model ran; the failure-surface share is the mechanical proxy for it.
