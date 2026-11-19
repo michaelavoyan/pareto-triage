@@ -1,7 +1,20 @@
 # Changelog
 
-## Unreleased
+## 0.4.1
 
+- The shape verdict now says what carries it. `ranked.json` gains
+  `attribution`, splitting total impact and the C20 top fifth by class
+  (`defect` from rules, `failure_mode` from judgment), with cluster and finding
+  counts and a verdict computed on each class alone. The Shape section prints a
+  second sentence next to the verdict: "62% of the concentration comes from rule
+  findings, 38% from judgment", or "All of the concentration comes from rule
+  findings; judgment produced no clusters" when a class is empty. When judgment
+  exists but would be `insufficient` on its own, the report adds "Judgment alone
+  would be insufficient at 2 clusters; this verdict is carried by 62 rule
+  findings." A verdict produced by rule clusters is never presented as a model
+  conclusion. Calibrated on Signal-Android: 200 judged sites, 3 ranked findings,
+  and a verdict carried by the 62 `jvm-empty-catch` rule hits rather than by
+  judgment.
 - `jvm-sql-injection` and `jvm-exec-injection` no longer fire on shapes that
   only look like injection. `execute(` is a name shared by SQL statements,
   executors, and callbacks, so the SQL rule now also requires a statement verb
