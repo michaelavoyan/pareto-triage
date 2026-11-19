@@ -175,16 +175,21 @@ Swift sites are `func name(`, `init(`, `deinit`, and a computed property (`var n
 
 Overlapping sites are collapsed: when a function is defined inside another, only the inner one is emitted, with `enclosed_by` naming its container. Judging a handler and the closure inside it as two sites would score the same lines twice. `context --include-enclosing` keeps both for anyone who wants the old view.
 
-Default cap is 400 sites, filled by a seeded shuffle of the candidate population (`--sample-order random`, the default), with the per-file cap applied after the shuffle. `--seed N` (default 0) makes the draw reproducible; the same tree, seed, and limit produce the same `context.jsonl`. `--sample-order ranked` restores the reach → inbound → body size → path order. The cap is reported; it is never silent. Raise it with `--limit` when a large repo needs a second pass.
+Default cap is 400 sites, filled by a seeded shuffle of the judgeable candidate population (`--sample-order random`, the default), with the per-file cap applied after the shuffle. `--seed N` (default 0) makes the draw reproducible; the same tree, seed, and limit produce the same `context.jsonl`. `--sample-order ranked` restores the reach → inbound → body size → path order. The cap is reported; it is never silent. Raise it with `--limit` when a large repo needs a second pass.
 
-Random is the default because the ranked order was measured and did not beat it — see the next section. `context` prints the method:
+A site is judgeable when its body has at least four non-blank lines **and** contains a failure surface: `try`/`catch`, `await`/`suspend`/`withContext`, a network call, a DB write (`insert`/`update`/`delete`/`execute`/`run(`), or a loop. A three-line accessor cannot contain a failure mode, so judging it can only restate the source. The filter applies to the sample only: `context --all` still writes every candidate to `candidates.jsonl`, and the selected sites remain its prefix. When a repo has fewer judgeable sites than the limit, the rest of the cap is filled from the non-judgeable remainder in ranked order, and the fallback is reported rather than hidden.
+
+Random is the default because the ranked order was measured and did not beat it — see the next section. `context` prints the method and the filter:
 
 ```
 sample     random, seed 0: kept 400 of 5,412 candidates, max 20 per file
+judgeable  2,918 of 5,412 candidates (53%) have a failure surface and 4+ non-blank lines; 2,494 filtered from the sample
            rule findings cover every file; this is a sample only for judgment
 ```
 
-It also writes `out/sample.json` with `{mode, seed, population, kept, per_file}`. `context.jsonl` stays record-only: the sampling method lives in that sidecar, and `report` repeats it under "Could not determine".
+Measured on Signal-Android (20,768 candidates, the first 200 of the default sample): 4,341 of 20,768 candidates are judgeable (20.9%). Before the filter, the first 200 held 56 sites of three lines or fewer, 37 with a failure surface (18.5%), a median body of 6 non-blank lines, and 1 network call. After the filter: 0 short sites, 200 with a failure surface (100%), a median body of 15 lines, and 8 network calls. The population and its judgeable count do not change — the filter changes which sites are sampled, not what exists. Phase-2 yield is not re-measured here, because no model ran; the failure-surface share is the mechanical proxy for it.
+
+It also writes `out/sample.json` with `{mode, seed, population, kept, per_file, judgeable}`; `judgeable` records the count that passed, the count filtered out, and how many non-judgeable sites were used as the ranked fallback. `context.jsonl` stays record-only: the sampling method lives in that sidecar, and `report` repeats it under "Could not determine".
 
 ## Is the selection better than random?
 
@@ -196,7 +201,7 @@ The file has the same record shape as `context.jsonl`. Its order is the contract
 
 ### What the sample covers
 
-`detect` runs on every file. A rule finding outside the sampled sites is still emitted, scored, and ranked; the sample never narrows the mechanical pass.
+`detect` runs on every source file except test code: paths, directories, and file names that `is_test_path` recognises (`/test/`, `/androidTest/`, `__tests__`, `FooTest.java`, `test_*.py`, `*.spec.ts`, and the rest) are skipped, using the same predicate `context` uses. Test code is not on the request path; scanning it puts findings in the report that no fix on the request path can remove. The skip count is printed. A rule finding outside the sampled sites is still emitted, scored, and ranked; the sample never narrows the mechanical pass.
 
 The sample bounds phase-2 judgment only. The model judges the functions in `context.jsonl`, so a failure mode — a missing timeout, a swallowed error — in a function outside the sample is not assessed at all. The report counts those sites as unjudged, not as clean. The sample also says nothing about severity, impact, or what to fix first; those come from the ranking, which covers findings from the whole tree.
 

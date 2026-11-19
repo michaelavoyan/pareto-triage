@@ -40,13 +40,15 @@ Swift and Objective-C are not in this file because there are no rules for them. 
 
 | Rule | Taxonomy | Blast | Silence | Catches |
 |---|---|---|---|---|
-| `jvm-exec-injection` | command-injection | 5 | 2 | `Runtime.getRuntime().exec(` or `ProcessBuilder(` with `+` on the same line |
-| `jvm-sql-injection` | sql-injection | 5 | 2 | `executeQuery`/`executeUpdate`/`execute` with `+` and a quote on the same line |
+| `jvm-exec-injection` | command-injection | 5 | 2 | `Runtime.getRuntime().exec(` or `ProcessBuilder(` with `+` on the same line, where a `+` operand is not a compile-time constant |
+| `jvm-sql-injection` | sql-injection | 5 | 2 | `executeQuery`/`executeUpdate`/`execute` with `+` on the same line and a statement verb (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE INTO`) inside the call |
 | `jvm-empty-catch` | swallowed-exception | 4 | 3 | a `catch (...)` block whose body is empty or comments only |
 | `jvm-weak-hash` | weak-hash | 4 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
 | `jvm-object-input-stream` | unsafe-deserialization | 5 | 3 | `new ObjectInputStream(` |
 
 The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-empty-catch` reads forward only far enough to prove the body holds nothing but whitespace or comments; an unbalanced block is skipped rather than guessed.
+
+Line-local precision needs one more test each. `execute(` is a name shared by SQL statements, executors, and callback dispatchers, so `jvm-sql-injection` also requires a statement verb inside the call's parentheses: `keyedExecutor.execute("Call::" + id, …)` is quiet, `stmt.execute("DELETE FROM t WHERE id = " + id)` is not. `jvm-exec-injection` requires at least one `+` operand that is not a compile-time constant: a lowercase name, a field, a parameter, an array element, or a call is a value; `UPPER_SNAKE_CASE` names (`FILTER_SPEC`, `BuildConfig.ENDPOINT`), quoted literals, and numeric literals are constants. `exec("logcat -d " + FILTER_SPEC)` is a fixed command, not injection; `exec("convert " + path)` is. Both rules ignore calls inside comments and string literals.
 
 ## Effort for a rule match
 
