@@ -72,6 +72,55 @@ class DetectTests(unittest.TestCase):
             self.assertEqual(list(Path(out).iterdir()), [])
 
 
+class TestFileSkipTests(unittest.TestCase):
+    """detect and context share is_test_path: test code is not scanned."""
+
+    def test_a_reachable_test_file_is_not_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            leaky = repo / "app" / "src" / "test" / "java" / "LeakyTest.java"
+            leaky.parent.mkdir(parents=True)
+            leaky.write_text(
+                "package com.acme;\n\npublic final class LeakyTest {\n"
+                "    public Process run(String path) throws java.io.IOException {\n"
+                '        return Runtime.getRuntime().exec("rm " + path);\n'
+                "    }\n}\n")
+            app = repo / "app" / "src" / "main" / "java" / "App.java"
+            app.parent.mkdir(parents=True)
+            app.write_text(
+                "package com.acme;\n\npublic final class App {\n"
+                "    public static void main(String[] args) {\n        run();\n    }\n\n"
+                "    static void run() throws java.io.IOException {\n"
+                '        Runtime.getRuntime().exec("rm " + args);\n'
+                "    }\n}\n")
+            out = Path(tmp) / "out"
+            gate = run(["gate", repo, "--min-loc", "1", "--out", out])
+            self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+
+            # A gate-produced scope never names a test file as an entrypoint.
+            # Write one by hand so the test file is reachable for certainty.
+            scope = json.loads((out / "scope.json").read_text())
+            scope["entrypoints"].append({
+                "kind": "cli", "framework": "java",
+                "file": "app/src/test/java/LeakyTest.java", "line": 1, "detail": "main"})
+            (out / "scope.json").write_text(json.dumps(scope), encoding="utf-8")
+
+            result = run(["detect", repo, "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            findings = [json.loads(line) for line in
+                        (out / "defects.jsonl").read_text().splitlines() if line]
+            self.assertEqual([(f["file"], f["rule"]) for f in findings],
+                             [("app/src/main/java/App.java", "jvm-exec-injection")])
+            self.assertIn("1 skipped as test code", result.stdout)
+
+    def test_the_skip_count_is_printed_even_when_no_test_files_exist(self):
+        with tempfile.TemporaryDirectory() as out:
+            gate = run(["gate", FIXTURES / "python-app", "--min-loc", "5", "--out", out])
+            self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+            result = run(["detect", FIXTURES / "python-app", "--out", out])
+            self.assertIn("0 skipped as test code", result.stdout)
+
+
 class RuleCoverageTests(unittest.TestCase):
     """A language with no detector must be reported, never implied clean."""
 

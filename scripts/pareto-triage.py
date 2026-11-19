@@ -11,7 +11,7 @@ import shlex
 import sys
 from pathlib import Path
 
-from lib.walk import walk, count_loc
+from lib.walk import walk, count_loc, is_test_path
 from lib.lang import (SUPPORTED_LABEL, frameworks, language_label, languages,
                       read_manifests, split_supported, test_runner)
 from lib.entry import (extract_entrypoints, entrypoint_counts,
@@ -678,9 +678,11 @@ def cmd_detect(positional, flags):
 
     walked = walk(repo)
     aliases = read_aliases(repo)
-    coverage = scope.get("rule_coverage") or rule_coverage(walked["files"])
+    scanned = [f for f in walked["files"] if not is_test_path(f["rel"])]
+    test_files = len(walked["files"]) - len(scanned)
+    coverage = rule_coverage(scanned)
     unruled = _unruled_languages(coverage, set(scope["languages"]["supported"]))
-    findings, warnings = detect_defects(walked["files"])
+    findings, warnings = detect_defects(scanned)
 
     entry_files = {e["file"] for e in scope["entrypoints"]}
     seeds = seeds_from_entrypoints(scope["entrypoints"])
@@ -718,7 +720,8 @@ def cmd_detect(positional, flags):
         by_reach[finding["reach"]] = by_reach.get(finding["reach"], 0) + 1
 
     print("pareto-triage %s — detect" % VERSION)
-    print("files      %s scanned" % num(len(walked["files"])))
+    print("files      %s scanned, %s skipped as test code"
+          % (num(len(scanned)), num(test_files)))
     _print_rule_coverage(coverage)
     print("findings   %d" % len(findings))
     for taxonomy, count in sorted(by_taxonomy.items(), key=lambda kv: -kv[1]):
