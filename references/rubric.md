@@ -3,6 +3,7 @@
 Scoring is deterministic. Given the same findings and this document, two people must produce identical rankings. If they do not, the rubric is wrong — fix the rubric, not the scores.
 
 Change log:
+- 1.5.0 — attribution: the C20 share is split by finding class (rule defect vs judgment), overall and inside the top fifth, with a per-class verdict.
 - 1.4.0 — a shape verdict needs at least three clusters; below that C20 is arithmetic, the verdict is `insufficient`, and no `shortcut` is claimed.
 - 1.0.0 — initial. Reach gate, impact = blast × silence / 3, priority = impact / effort, noisy-OR clustering.
 - 1.3.0 — effort budgets S/M/L (5/15/30 units) are defined for the curve markers; no score changes.
@@ -145,6 +146,20 @@ made: when the shape is `insufficient`, every `pareto` and `pareto_ladder` row
 reports `shortcut: false` so the two numbers cannot disagree.
 
 Only `shortcut` justifies "fix these few and stop." `flat` means returns track effort — say so plainly.
+
+## Attribution
+
+A cluster's class is the class of its findings: `defect` for a built-in rule, `failure-mode` for phase-2 judgment. The C20 set is the top `ceil(0.2 × n)` clusters by impact, exactly as Shape defines it.
+
+```
+class_impact    = Σ impact of that class's clusters
+class_share     = class_impact / Σ impact of all clusters
+class_top       = Σ impact of that class's clusters inside the C20 set
+class_top_share = class_top / Σ impact of the C20 set
+class_verdict   = shape(that class's clusters alone)
+```
+
+`ranked.json` records this as `attribution.<class>.{clusters, findings, impact, share, top.{clusters, impact, share}, verdict}` for `defect` and `failure_mode`. `share` is of total impact; `top.share` is the share of the concentration, and is the number the report prints. A class with no clusters reports zero and `empty`, not a percentage of nothing. The per-class verdict is what makes "judgment alone would be insufficient" checkable rather than asserted.
 
 ## Quadrant
 

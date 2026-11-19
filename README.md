@@ -54,6 +54,8 @@ One HTML file, no dashboard, no login. It opens with one of five answers:
 
 Even a flat repo gets numbers: what 10% of the work buys, what half buys. "80% of the impact for 60% of the effort" is still a plan you can take to a standup.
 
+The report also says what carries the verdict: an attribution sentence splits the concentration between rule findings and judgment, so a rule-driven result is never read as a model conclusion.
+
 ## How it decides
 
 27 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, empty `catch`, weak hashing, mutable defaults.

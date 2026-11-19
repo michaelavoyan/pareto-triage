@@ -12,6 +12,12 @@ or
 
 > No shortcut. Impact is spread across 31 unrelated findings; effort tracks impact almost linearly. Fixing a few will not move the needle.
 
+Directly under the verdict sentence, print one attribution sentence that names what carries the concentration:
+
+> 62% of the concentration comes from rule findings, 38% from judgment.
+
+When one class has no clusters, say so instead of printing a share: "All of the concentration comes from rule findings; judgment produced no clusters." When that class has clusters but none in the top fifth, say "none of it comes from judgment". A verdict produced by rule clusters must never read as a model conclusion. If judgment findings exist but would be `insufficient` on their own while the rules produce `moderate` or `shortcut`, add: "Judgment alone would be insufficient at 2 clusters; this verdict is carried by 62 rule findings."
+
 ## 2. Curve
 
 Cumulative impact vs cumulative effort, plus a ladder answering one question at three heights: what share of the total effort buys 50%, 70%, 80% of the impact, and how many clusters that is. The 80% row is the Pareto headline when it is cheap; the 50% and 70% rows are the answer when it is not. A reader must never be left with only "no shortcut".

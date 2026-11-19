@@ -24,8 +24,9 @@ from lib.context import (extract_sites, load_sites, site_contains, MAX_SITES_DEF
 from lib import sampling
 from lib.effort import apply_efforts
 from lib.score import (annotate, cluster_findings, shape, quadrant, coverage_curve,
-                       curve_markers, pareto_point, pareto_ladder, DEFAULT_BUDGETS)
-from lib.render import render
+                       curve_markers, pareto_point, pareto_ladder, attribution,
+                       DEFAULT_BUDGETS)
+from lib.render import render, attribution_sentences
 from lib.redact import redact_findings
 from lib import calibrate, prompts, probes
 from lib import verify
@@ -933,6 +934,7 @@ def cmd_rank(positional, flags):
     annotate(findings)
     clusters = cluster_findings(findings)
     shape_info = shape(clusters)
+    attribution_info = attribution(clusters, shape_info)
     quad = quadrant(findings)
     curve = coverage_curve(clusters)
     markers = curve_markers(clusters, budgets)
@@ -1025,6 +1027,7 @@ def cmd_rank(positional, flags):
         },
         "rule_coverage": {"by_language": rule_rows},
         "shape": shape_info,
+        "attribution": attribution_info,
         "quadrant": quad,
         "curve": curve,
         "curve_markers": markers,
@@ -1061,6 +1064,8 @@ def cmd_rank(positional, flags):
         print("shape      %s — C20 %.0f%% (top %d of %d carry that share of impact)"
               % (shape_info["verdict"], 100 * shape_info["c20"], shape_info["top_n"],
                  shape_info["n_clusters"]))
+    for sentence in attribution_sentences(attribution_info, shape_info["verdict"]):
+        print("attribution %s" % sentence)
     counts = quad["counts"]
     print("quadrant   %d do now, %d schedule, %d anytime, %d ignore"
           % (counts["quick_wins"], counts["batch_2"], counts["free"], counts["skip"]))
@@ -1141,6 +1146,8 @@ def cmd_report(positional, flags):
         print("board      %s" % ("opened in your browser" if opened else "could not open a browser; open %s" % html_path))
 
     print("verdict    %s" % ranked["shape"]["verdict"])
+    for sentence in attribution_sentences(ranked.get("attribution"), ranked["shape"]["verdict"]):
+        print("attribution %s" % sentence)
     if redactions:
         print("redacted   %d secret(s) across %d finding(s); defects.jsonl keeps the raw quote"
               % (sum(r["count"] for r in redactions),
