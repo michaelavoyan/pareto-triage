@@ -57,9 +57,7 @@ META = {
                            "process argument built by string concatenation"),
     "jvm-sql-injection": ("sql-injection", 5, 2,
                           "SQL built by string concatenation carries its input into the query"),
-    "jvm-empty-catch": ("swallowed-exception", 4, 3,
-                        "catch body is empty or comments only, so the failure disappears"),
-    "jvm-weak-hash": ("weak-hash", 4, 3,
+    "jvm-weak-hash": ("weak-hash", 3, 3,
                       "MD5 and SHA-1 are broken for collision resistance"),
     "jvm-object-input-stream": ("unsafe-deserialization", 5, 3,
                                 "ObjectInputStream turns its input into arbitrary objects"),
@@ -102,7 +100,7 @@ CONFIG_SECRETS = [
 # rule ran where none did is the failure this module exists to prevent.
 PY_RULE_IDS = tuple(sorted(rule for rule in META if rule.startswith("py-")))
 JVM_RULE_IDS = (
-    "jvm-exec-injection", "jvm-sql-injection", "jvm-empty-catch",
+    "jvm-exec-injection", "jvm-sql-injection",
     "jvm-weak-hash", "jvm-object-input-stream",
 ) + tuple(rule for rule, _ in SECRET_PATTERNS)
 CONFIG_RULE_IDS = tuple(rule for rule, _ in CONFIG_SECRETS)
@@ -266,6 +264,24 @@ def rule_coverage(files):
     return {"by_language": rows}
 
 
+def rule_incidence(files, findings):
+    """Hits per rule for every rule that could run on these files.
+
+    A zero is an exercised rule that found nothing: the detector read the
+    files and the tree did not match. A rule absent from the list never ran
+    because no file of its language was scanned, which is a blind spot and
+    already reported as coverage.
+    """
+    applicable = set()
+    for f in files:
+        applicable.update(rule_ids_for_ext(f["ext"]))
+    hits = {rule: 0 for rule in applicable}
+    for finding in findings:
+        if finding["rule"] in hits:
+            hits[finding["rule"]] += 1
+    return [(rule, hits[rule]) for rule in sorted(hits)]
+
+
 def _js_defects(text):
     lines = text.split("\n")
     found = []
@@ -285,7 +301,6 @@ JVM_SQL_CALL = re.compile(r"\b(?:executeQuery|executeUpdate|execute)\s*\(")
 JVM_SQL_VERB = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE\s+INTO)\b", re.I)
 JVM_WEAK_HASH = re.compile(r"\bMessageDigest\s*\.\s*getInstance\s*\(\s*\"(?:MD5|SHA-1)\"")
 JVM_OBJECT_INPUT = re.compile(r"\bnew\s+ObjectInputStream\s*\(")
-JVM_CATCH = re.compile(r"\bcatch\s*\([^)]*\)\s*\{")
 
 # A '+' operand that is a literal or a compile-time constant. UPPER_SNAKE_CASE
 # names (FILTER_SPEC, BuildConfig.ENDPOINT) are constants; a lowercase name, a
@@ -296,10 +311,12 @@ JVM_UPPER_NAME = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def _blank_noncode(text):
-    """Replace comments and string/char literals with spaces, keeping offsets.
+    """Mask comments and literal contents with spaces, keeping offsets.
 
-    Empty-catch detection needs braces that are code, not braces inside a
-    literal, and a comment-only body must still read as empty.
+    A comment becomes whitespace, so a comment-only block reads as empty. A
+    string or char literal keeps its opening quote: the literal is code, and
+    masking it to whitespace made a body of `""`, `"Unknown"`, or a string
+    template look like an empty body.
     """
     out = []
     i = 0
@@ -307,7 +324,8 @@ def _blank_noncode(text):
         if text[i:i + 3] == '"""':
             end = text.find('"""', i + 3)
             end = len(text) if end < 0 else end + 3
-            out.append("".join(c if c == "\n" else " " for c in text[i:end]))
+            out.append('"')
+            out.append("".join(c if c == "\n" else " " for c in text[i + 1:end]))
             i = end
         elif text[i:i + 2] in ("//", "/*"):
             closer = "\n" if text[i:i + 2] == "//" else "*/"
@@ -321,7 +339,8 @@ def _blank_noncode(text):
             while j < len(text) and text[j] != quote and text[j] != "\n":
                 j += 2 if text[j] == "\\" else 1
             end = min(j + 1, len(text))
-            out.append("".join(c if c == "\n" else " " for c in text[i:end]))
+            out.append(quote)
+            out.append("".join(c if c == "\n" else " " for c in text[i + 1:end]))
             i = end
         else:
             out.append(text[i])
@@ -329,32 +348,10 @@ def _blank_noncode(text):
     return "".join(out)
 
 
-def _jvm_catch_blocks(blanked):
-    """Return (match, body_start, body_end) for every balanced catch block.
-
-    An unbalanced block is skipped rather than guessed: the rule only claims
-    what the braces prove.
-    """
-    blocks = []
-    for match in JVM_CATCH.finditer(blanked):
-        depth = 1
-        cursor = match.end()
-        while cursor < len(blanked) and depth:
-            if blanked[cursor] == "{":
-                depth += 1
-            elif blanked[cursor] == "}":
-                depth -= 1
-            cursor += 1
-        if depth:
-            continue
-        blocks.append((match, match.end(), cursor - 1))
-    return blocks
-
-
 def _call_arguments(original, blanked, start):
     """Source text of a call's arguments, from just after '(' to the match.
 
-    `blanked` is the same line with comments and literals replaced by spaces,
+    `blanked` is the same line with comments and literal contents masked,
     so parentheses inside a string cannot close the call early. When the call
     does not close on this line, the rest of the line is returned: the rule is
     line-based and only claims what the line shows.
@@ -456,12 +453,6 @@ def _jvm_defects(text):
             found.append(("jvm-weak-hash", number, stripped[:300]))
         if JVM_OBJECT_INPUT.search(line_blanked):
             found.append(("jvm-object-input-stream", number, stripped[:300]))
-
-    for match, start, end in _jvm_catch_blocks(blanked_text):
-        line = blanked_text.count("\n", 0, match.start()) + 1
-        body = blanked_text[start:end]
-        if not body.strip():
-            found.append(("jvm-empty-catch", line, lines[line - 1].strip()[:300]))
     return found
 
 

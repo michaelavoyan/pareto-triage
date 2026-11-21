@@ -8,7 +8,7 @@ Swift and Objective-C are not in this file because there are no rules for them. 
 
 ## Rules
 
-The tables below list all 27 active rules.
+The tables below list all 26 active rules.
 
 ### Python (AST-based, `ast.parse`)
 
@@ -44,11 +44,10 @@ The tables below list all 27 active rules.
 |---|---|---|---|---|
 | `jvm-exec-injection` | command-injection | 5 | 2 | `Runtime.getRuntime().exec(` or `ProcessBuilder(` with `+` on the same line, where a `+` operand is not a compile-time constant |
 | `jvm-sql-injection` | sql-injection | 5 | 2 | `executeQuery`/`executeUpdate`/`execute` with `+` on the same line and a statement verb (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE INTO`) inside the call |
-| `jvm-empty-catch` | swallowed-exception | 4 | 3 | a `catch (...)` block whose body is empty or comments only |
-| `jvm-weak-hash` | weak-hash | 4 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
+| `jvm-weak-hash` | weak-hash | 3 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
 | `jvm-object-input-stream` | unsafe-deserialization | 5 | 3 | `new ObjectInputStream(` |
 
-The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-empty-catch` reads forward only far enough to prove the body holds nothing but whitespace or comments; an unbalanced block is skipped rather than guessed.
+The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-weak-hash` proves the algorithm at the line, never its role: an MD5 used only to bucket a value — a cache key, a dictionary key, a display-name collision digest — fires the same as an MD5 guarding a signature. Detection is certain, severity is contextual, so blast is 3 rather than 5. The `WeakHashBucketing` fixture is that shape and is expected to fire.
 
 Line-local precision needs one more test each. `execute(` is a name shared by SQL statements, executors, and callback dispatchers, so `jvm-sql-injection` also requires a statement verb inside the call's parentheses: `keyedExecutor.execute("Call::" + id, …)` is quiet, `stmt.execute("DELETE FROM t WHERE id = " + id)` is not. `jvm-exec-injection` requires at least one `+` operand that is not a compile-time constant: a lowercase name, a field, a parameter, an array element, or a call is a value; `UPPER_SNAKE_CASE` names (`FILTER_SPEC`, `BuildConfig.ENDPOINT`), quoted literals, and numeric literals are constants. `exec("logcat -d " + FILTER_SPEC)` is a fixed command, not injection; `exec("convert " + path)` is. Both rules ignore calls inside comments and string literals.
 
@@ -102,6 +101,14 @@ A finding's `evidence` is quoted verbatim, which means a found secret is a publi
 ## Considered and rejected
 
 Rules that were implemented, measured, and withdrawn. Recorded so the measurement survives and nobody re-proposes them without new evidence.
+
+### `jvm-empty-catch` — rejected, 0/60 precision
+
+Fires on a `catch` block whose body is empty or comments only.
+
+An audit of all 60 findings on Signal-Android at `8959dc6` found no true positives. 55 were deliberate: cleanup, optional work, or parse/validation control flow where the failure has no recoverable meaning and the catch is the handling. 5 were mechanically false, all from one cause — a catch whose body is a string literal, which the literal masking turned into whitespace: `NameCollisionTables.kt:489` (`""`), `LogSectionSystemInfo.kt:103` (`"Unknown"`), `RingRtcDynamicConfiguration.kt:115` and `:131` (`""`), and `debuglogs-viewer/WebView.kt:88` (a template). Those five are now fixtures.
+
+Withdrawn: whether a catch may swallow is intent, and intent is not line-local. `taxonomy.md` already names the optional-operation counter-example, and the 55 deliberate findings are that shape: the same code is correct when the caller's contract allows partial success. Deciding it needs the caller and the contract, not the line, so the rule cannot reach a precision the defect tier can defend. The masking helper was fixed in the same release: a string literal counts as a body, a comment does not.
 
 ### `jvm-http-no-timeout` — rejected, 0/4 precision
 

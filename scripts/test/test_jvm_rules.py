@@ -2,6 +2,7 @@
 
 import json
 import posixpath
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,30 +15,35 @@ CLI = SCRIPTS / "pareto-triage.py"
 FIXTURES = SCRIPTS.parent / "fixtures"
 FIXTURE = FIXTURES / "jvm-rules"
 PREFIX = "src/main/java/com/acme/"
+KOTLIN = "src/main/kotlin/com/acme/"
 SAFE = PREFIX + "SafeCounterparts.java"
 CLEAN = [SAFE, PREFIX + "ConstantExec.java", PREFIX + "KeyedCallback.java",
          # Log-then-throw and log-then-return were the shapes a rejected
          # log-only-catch rule had to stay silent on. They remain silent here
          # because neither body is empty.
-         PREFIX + "LogThenThrow.java", PREFIX + "CatchReturnsError.java"]
+         PREFIX + "LogThenThrow.java", PREFIX + "CatchReturnsError.java",
+         # The five mechanically false jvm-empty-catch findings from the
+         # Signal-Android audit. The rule is withdrawn; these files prove the
+         # masking helper does not read their literal bodies as empty.
+         KOTLIN + "NameCollisionTables.kt", KOTLIN + "LogSectionSystemInfo.kt",
+         KOTLIN + "RingRtcDynamicConfiguration.kt", KOTLIN + "WebView.kt"]
 
 sys.path.insert(0, str(SCRIPTS))
-from lib.rules import detect_defects  # noqa: E402
+from lib.rules import _blank_noncode, detect_defects  # noqa: E402
 from lib.schema import validate_finding  # noqa: E402
 
 EXPECTED = {
     PREFIX + "ExecInjection.java": "jvm-exec-injection",
     PREFIX + "SqlInjection.java": "jvm-sql-injection",
-    PREFIX + "EmptyCatch.java": "jvm-empty-catch",
     PREFIX + "WeakHash.java": "jvm-weak-hash",
+    PREFIX + "WeakHashBucketing.java": "jvm-weak-hash",
     PREFIX + "ObjectInput.java": "jvm-object-input-stream",
 }
 
 AXES = {
     "jvm-exec-injection": ("command-injection", 5, 2),
     "jvm-sql-injection": ("sql-injection", 5, 2),
-    "jvm-empty-catch": ("swallowed-exception", 4, 3),
-    "jvm-weak-hash": ("weak-hash", 4, 3),
+    "jvm-weak-hash": ("weak-hash", 3, 3),
     "jvm-object-input-stream": ("unsafe-deserialization", 5, 3),
 }
 
@@ -69,11 +75,11 @@ class JvmFixtureTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def test_each_rule_fires_exactly_once_on_its_own_file(self):
+    def test_each_rule_fires_on_its_own_fixture(self):
         self.assertEqual(sorted((f["file"], f["rule"]) for f in self.findings),
                          sorted(EXPECTED.items()))
         for rule in EXPECTED.values():
-            self.assertEqual(sum(1 for f in self.findings if f["rule"] == rule), 1, rule)
+            self.assertTrue(any(f["rule"] == rule for f in self.findings), rule)
 
     def test_the_safe_counterparts_are_clean(self):
         for rel in CLEAN:
@@ -98,6 +104,61 @@ class JvmFixtureTests(unittest.TestCase):
                    for p in FIXTURE.rglob("*") if p.is_file()}
         for finding in self.findings:
             self.assertEqual(validate_finding(finding, sources=sources), [], finding["id"])
+
+
+class NoncodeMaskTests(unittest.TestCase):
+    """A literal is code: masking it away must not invent an empty body."""
+
+    CATCH = re.compile(r"\bcatch\s*\([^)]*\)\s*\{")
+
+    @classmethod
+    def catch_bodies(cls, text):
+        blanked = _blank_noncode(text)
+        bodies = []
+        for match in cls.CATCH.finditer(blanked):
+            depth = 1
+            cursor = match.end()
+            while cursor < len(blanked) and depth:
+                if blanked[cursor] == "{":
+                    depth += 1
+                elif blanked[cursor] == "}":
+                    depth -= 1
+                cursor += 1
+            bodies.append(blanked[match.end():cursor - 1])
+        return bodies
+
+    def test_the_mask_keeps_offsets(self):
+        text = 'val s = "a { b } c" // }\n'
+        self.assertEqual(len(_blank_noncode(text)), len(text))
+
+    def test_a_comment_only_body_still_reads_as_empty(self):
+        text = "try {\n    go();\n} catch (IOException e) {\n    // ignored\n}\n"
+        self.assertEqual([body.strip() for body in self.catch_bodies(text)], [""])
+
+    def test_a_block_comment_only_body_still_reads_as_empty(self):
+        text = "try {\n    go();\n} catch (IOException e) {\n    /* ignored */\n}\n"
+        self.assertEqual([body.strip() for body in self.catch_bodies(text)], [""])
+
+    def test_braces_inside_a_literal_do_not_end_the_body(self):
+        text = 'try {\n    go();\n} catch (Exception e) {\n    log("}");\n}\n'
+        bodies = self.catch_bodies(text)
+        self.assertEqual(len(bodies), 1)
+        self.assertTrue(bodies[0].strip())
+
+    def test_the_five_signal_shapes_are_not_empty_bodies(self):
+        cases = {
+            "NameCollisionTables.kt": 1,        # return ""
+            "LogSectionSystemInfo.kt": 1,       # return "Unknown"
+            "RingRtcDynamicConfiguration.kt": 2,  # two returns of ""
+            "WebView.kt": 1,                    # return "Error... ${e.message}"
+        }
+        for name, count in cases.items():
+            text = (FIXTURE / KOTLIN / name).read_text(encoding="utf-8")
+            bodies = self.catch_bodies(text)
+            self.assertEqual(len(bodies), count, name)
+            for body in bodies:
+                self.assertTrue(body.strip(),
+                                "%s: a literal body was masked to an empty body" % name)
 
 
 class JvmRuleTests(unittest.TestCase):
@@ -171,50 +232,15 @@ class JvmRuleTests(unittest.TestCase):
             self.assertEqual(self.rules("A.java", text),
                              [("jvm-sql-injection", 1, text.strip())], text)
 
-    def test_empty_catch_body_spanning_lines_fires_once(self):
-        text = "try {\n    go();\n} catch (IOException e) {\n    // ignored\n}\n"
-        self.assertEqual(self.rules("A.java", text),
-                         [("jvm-empty-catch", 3, "} catch (IOException e) {")])
-
-    def test_catch_with_a_body_is_quiet(self):
-        text = "try {\n    go();\n} catch (IOException e) {\n    log(e);\n}\n"
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_braces_inside_a_catch_body_are_not_an_empty_body(self):
-        text = ('try {\n    go();\n} catch (Exception e) {\n'
-                '    throw new IllegalStateException("{}");\n}\n')
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_log_then_throw_is_quiet(self):
-        text = ('try {\n    go();\n} catch (IOException e) {\n'
-                '    Log.e(TAG, "failed", e);\n'
-                '    throw new IllegalStateException(e);\n}\n')
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_log_then_return_is_quiet(self):
-        text = ('try {\n    go();\n} catch (IOException e) {\n'
-                '    Log.e(TAG, "failed", e);\n'
-                '    return -1;\n}\n')
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_catch_that_only_rethrows_is_quiet(self):
-        text = 'try {\n    go();\n} catch (IOException e) {\n    throw e;\n}\n'
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_log_line_containing_another_statement_is_quiet(self):
-        text = ('try {\n    go();\n} catch (IOException e) {\n'
-                '    Log.e(TAG, "failed", e); retry();\n}\n')
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_log_only_body_is_not_an_empty_catch(self):
-        text = ('try {\n    go();\n} catch (IOException e) {\n'
-                '    Log.e(TAG, "failed", e);\n}\n')
-        rules = [rule for rule, _, _ in self.rules("A.java", text)]
-        self.assertEqual(rules, [])
-
     def test_sha256_is_not_a_weak_hash(self):
         self.assertEqual(self.rules("A.java",
                                     'MessageDigest.getInstance("SHA-256");\n'), [])
+
+    def test_a_bucketing_key_still_fires_and_carries_blast_3(self):
+        text = (FIXTURE / PREFIX / "WeakHashBucketing.java").read_text(encoding="utf-8")
+        findings, _ = detect_defects([source(PREFIX + "WeakHashBucketing.java", text)])
+        self.assertEqual([(f["rule"], f["blast"]) for f in findings],
+                         [("jvm-weak-hash", 3)])
 
     def test_object_output_stream_is_not_deserialization(self):
         self.assertEqual(self.rules("A.java", "new ObjectOutputStream(stream);\n"), [])
