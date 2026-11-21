@@ -59,10 +59,6 @@ META = {
                           "SQL built by string concatenation carries its input into the query"),
     "jvm-empty-catch": ("swallowed-exception", 4, 3,
                         "catch body is empty or comments only, so the failure disappears"),
-    "jvm-http-no-timeout": ("missing-timeout", 4, 3,
-                            "HTTP client is built without a timeout"),
-    "jvm-log-only-catch": ("swallowed-exception", 3, 3,
-                           "catch logs the failure and lets execution continue"),
     "jvm-weak-hash": ("weak-hash", 4, 3,
                       "MD5 and SHA-1 are broken for collision resistance"),
     "jvm-object-input-stream": ("unsafe-deserialization", 5, 3,
@@ -107,7 +103,6 @@ CONFIG_SECRETS = [
 PY_RULE_IDS = tuple(sorted(rule for rule in META if rule.startswith("py-")))
 JVM_RULE_IDS = (
     "jvm-exec-injection", "jvm-sql-injection", "jvm-empty-catch",
-    "jvm-http-no-timeout", "jvm-log-only-catch",
     "jvm-weak-hash", "jvm-object-input-stream",
 ) + tuple(rule for rule, _ in SECRET_PATTERNS)
 CONFIG_RULE_IDS = tuple(rule for rule, _ in CONFIG_SECRETS)
@@ -291,21 +286,6 @@ JVM_SQL_VERB = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE\s+INTO)\b",
 JVM_WEAK_HASH = re.compile(r"\bMessageDigest\s*\.\s*getInstance\s*\(\s*\"(?:MD5|SHA-1)\"")
 JVM_OBJECT_INPUT = re.compile(r"\bnew\s+ObjectInputStream\s*\(")
 JVM_CATCH = re.compile(r"\bcatch\s*\([^)]*\)\s*\{")
-JVM_HTTP_BUILDER = re.compile(
-    r"(?:\bnew\s+)?\bOkHttpClient\s*\.\s*Builder\s*\("
-    r"|\bHttpClient\s*\.\s*newBuilder\s*\(")
-JVM_HTTP_TIMEOUT = re.compile(
-    r"\b(?:callTimeout|readTimeout|writeTimeout|connectTimeout)\b|\.\s*timeout\s*\(")
-# A catch body that is only one of these calls has logged the failure and
-# returned to the caller as if nothing happened.
-JVM_LOG_STATEMENT = re.compile(
-    r"^(?:"
-    r"(?:[\w$]+\s*\.\s*)*(?:Log|Logger|logger)\s*\.\s*"
-    r"(?:v|d|i|w|e|wtf|println|log|severe|warning|warn|info|config|fine|finer|finest|"
-    r"entering|exiting|throwing|trace|debug|error|fatal)\s*\("
-    r"|System\s*\.\s*(?:out|err)\s*\.\s*(?:print|println|printf|format|write|append)\s*\("
-    r"|(?:[\w$]+\s*\.\s*)*printStackTrace\s*\("
-    r")")
 
 # A '+' operand that is a literal or a compile-time constant. UPPER_SNAKE_CASE
 # names (FILTER_SPEC, BuildConfig.ENDPOINT) are constants; a lowercase name, a
@@ -369,83 +349,6 @@ def _jvm_catch_blocks(blanked):
             continue
         blocks.append((match, match.end(), cursor - 1))
     return blocks
-
-
-def _top_level_statements(body):
-    """Split a blanked body on ';' or a newline at nesting depth zero."""
-    parts = []
-    start = 0
-    depth = 0
-    for index, char in enumerate(body):
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            depth = max(0, depth - 1)
-        elif depth == 0 and char in ";\n":
-            parts.append(body[start:index])
-            start = index + 1
-    parts.append(body[start:])
-    return [part for part in parts if part.strip()]
-
-
-def _is_log_statement(statement):
-    """True when the whole statement is one logging or printing call."""
-    text = statement.strip().rstrip(";").strip()
-    match = JVM_LOG_STATEMENT.match(text)
-    if not match:
-        return False
-    depth = 1
-    index = match.end()
-    while index < len(text):
-        if text[index] == "(":
-            depth += 1
-        elif text[index] == ")":
-            depth -= 1
-            if not depth:
-                return not text[index + 1:].strip()
-        index += 1
-    return False
-
-
-def _log_only_body(body):
-    """True when every top-level statement in a catch body only logs."""
-    statements = _top_level_statements(body)
-    return bool(statements) and all(_is_log_statement(s) for s in statements)
-
-
-def _http_builder_expression(blanked, start, ext):
-    """Source after the builder call up to the end of its statement.
-
-    Java ends a statement at a top-level ';'. Kotlin ends it at a newline that
-    is not followed by a chained call, so a timeout on the next line is still
-    part of the expression.
-    """
-    kotlin = ext in (".kt", ".kts")
-    depth = 1
-    index = start
-    while index < len(blanked):
-        char = blanked[index]
-        if char in "([{":
-            depth += 1
-        elif char in ")]}":
-            if depth == 0:
-                return blanked[start:index]
-            depth -= 1
-        elif depth == 0:
-            if char == ";":
-                return blanked[start:index]
-            if kotlin and char == "\n":
-                previous = blanked[start:index].rstrip()
-                following = index + 1
-                while following < len(blanked) and blanked[following] in " \t\r\n":
-                    following += 1
-                chain = blanked[following:following + 2]
-                if previous.endswith(".") or chain.startswith(".") or chain == "?.":
-                    index = following
-                    continue
-                return blanked[start:index]
-        index += 1
-    return blanked[start:]
 
 
 def _call_arguments(original, blanked, start):
@@ -522,13 +425,10 @@ def _is_constant_operand(operand):
     return bool(JVM_UPPER_NAME.match(text.split(".")[-1].strip()))
 
 
-def _jvm_defects(text, ext):
+def _jvm_defects(text):
     lines = text.split("\n")
     blanked_text = _blank_noncode(text)
     blank_lines = blanked_text.split("\n")
-    offsets = [0]
-    for raw in lines[:-1]:
-        offsets.append(offsets[-1] + len(raw) + 1)
     found = []
     for number, raw in enumerate(lines, start=1):
         stripped = raw.strip()
@@ -552,15 +452,6 @@ def _jvm_defects(text, ext):
             if JVM_SQL_VERB.search(arguments) and len(_split_concat(arguments)) > 1:
                 found.append(("jvm-sql-injection", number, stripped[:300]))
 
-        # The builder must be constructed in this expression; a builder handed
-        # in as a parameter proves nothing about the timeouts it already has.
-        builder_match = JVM_HTTP_BUILDER.search(line_blanked)
-        if builder_match:
-            start = offsets[number - 1] + builder_match.end()
-            expression = _http_builder_expression(blanked_text, start, ext)
-            if not JVM_HTTP_TIMEOUT.search(expression):
-                found.append(("jvm-http-no-timeout", number, stripped[:300]))
-
         if JVM_WEAK_HASH.search(stripped):
             found.append(("jvm-weak-hash", number, stripped[:300]))
         if JVM_OBJECT_INPUT.search(line_blanked):
@@ -571,8 +462,6 @@ def _jvm_defects(text, ext):
         body = blanked_text[start:end]
         if not body.strip():
             found.append(("jvm-empty-catch", line, lines[line - 1].strip()[:300]))
-        elif _log_only_body(body):
-            found.append(("jvm-log-only-catch", line, lines[line - 1].strip()[:300]))
     return found
 
 
@@ -592,7 +481,7 @@ def detect_defects(files):
             pairs = _js_defects(f["text"])
         elif f["ext"] in JVM_EXT:
             # The Java/Kotlin secret patterns are the shared ones: no duplicate rule ids.
-            pairs = _jvm_defects(f["text"], f["ext"]) + _line_hits(f["text"], SECRET_PATTERNS)
+            pairs = _jvm_defects(f["text"]) + _line_hits(f["text"], SECRET_PATTERNS)
         elif f["ext"] in SECRET_EXTS or rel.rsplit("/", 1)[-1].startswith(".env"):
             pairs = _config_defects(f["text"])
         else:
