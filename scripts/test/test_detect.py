@@ -72,6 +72,46 @@ class DetectTests(unittest.TestCase):
             self.assertEqual(list(Path(out).iterdir()), [])
 
 
+class RuleIncidenceTests(unittest.TestCase):
+    """A zero must read as unexercised, so every rule that ran names its hits."""
+
+    def test_detect_names_every_rule_with_its_hit_count(self):
+        tmp, out, findings = gate_and_detect("python-app", 5)
+        self.addCleanup(tmp.cleanup)
+        result = run(["detect", FIXTURES / "python-app", "--out", out])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("rule hits", result.stdout)
+        self.assertIn("py-eval 1", result.stdout)
+        self.assertIn("py-shell-true 1", result.stdout)
+        self.assertIn("py-mutable-default 1", result.stdout)
+        # The detector ran on this tree and found none of these.
+        self.assertIn("py-os-system 0", result.stdout)
+        self.assertIn("py-secret-aws 0", result.stdout)
+        # A rule for a language this tree does not contain never ran, so it
+        # is not reported as zero.
+        self.assertNotIn("js-eval", result.stdout)
+        self.assertNotIn("jvm-weak-hash", result.stdout)
+
+    def test_zero_findings_still_shows_the_rules_that_ran(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            app = repo / "src" / "main" / "java" / "App.java"
+            app.parent.mkdir(parents=True)
+            app.write_text(
+                "package com.acme;\n\npublic final class App {\n"
+                '    public static void main(String[] args) { System.out.println("ok"); }\n'
+                "}\n")
+            out = Path(tmp) / "out"
+            gate = run(["gate", repo, "--min-loc", "1", "--out", out])
+            self.assertEqual(gate.returncode, 0, gate.stdout + gate.stderr)
+            result = run(["detect", repo, "--out", out])
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("findings   0", result.stdout)
+            self.assertIn("jvm-exec-injection 0", result.stdout)
+            self.assertIn("jvm-weak-hash 0", result.stdout)
+            self.assertNotIn("jvm-empty-catch", result.stdout)
+
+
 class TestFileSkipTests(unittest.TestCase):
     """detect and context share is_test_path: test code is not scanned."""
 
