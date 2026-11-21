@@ -17,7 +17,7 @@ from lib.lang import (SUPPORTED_LABEL, frameworks, language_label, languages,
 from lib.entry import (extract_entrypoints, entrypoint_counts,
                        filter_entrypoints_by_language, ENTRY_LANGUAGE_FLOOR)
 from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
-from lib.rules import detect_defects, rule_coverage
+from lib.rules import detect_defects, rule_coverage, rule_incidence
 from lib.imports import compute_reach, entry_paths, read_aliases, seeds_from_entrypoints
 from lib.context import (extract_sites, load_sites, site_contains, MAX_SITES_DEFAULT,
                          MAX_SOURCE_LINES, SAMPLE_ORDERS, DEFAULT_SAMPLE_ORDER, DEFAULT_SEED)
@@ -293,6 +293,33 @@ def _print_rule_coverage(coverage):
         else:
             detail = "%d/%d files (no rules)" % (row["files_with_rules"], row["files"])
         print("%s%-12s %s" % (prefix, row["lang"], detail))
+
+
+def _print_rule_incidence(files, findings):
+    """Show every rule that ran with its hits, so zero means unexercised.
+
+    Coverage says a detector existed for the language. This says the detector
+    was actually pointed at the tree and found nothing, which is different
+    from a rule that claimed coverage and was never exercised.
+    """
+    pairs = ["%s %d" % (rule, hits) for rule, hits in rule_incidence(files, findings)]
+    if not pairs:
+        return
+    print("rule hits  %s" % _wrap(pairs, len("rule hits  ")))
+
+
+def _wrap(tokens, indent, width=78):
+    lines = []
+    line = ""
+    for token in tokens:
+        candidate = token if not line else line + ", " + token
+        if line and len(candidate) + indent > width:
+            lines.append(line + ",")
+            line = token
+        else:
+            line = candidate
+    lines.append(line)
+    return ("\n" + " " * indent).join(lines)
 
 
 def cmd_gate(positional, flags):
@@ -743,6 +770,7 @@ def cmd_detect(positional, flags):
     print("files      %s scanned, %s skipped as test code"
           % (num(len(scanned)), num(test_files)))
     _print_rule_coverage(coverage)
+    _print_rule_incidence(scanned, findings)
     print("findings   %d" % len(findings))
     for taxonomy, count in sorted(by_taxonomy.items(), key=lambda kv: -kv[1]):
         print("  %-28s %d" % (taxonomy, count))

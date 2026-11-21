@@ -27,7 +27,6 @@ DEFECT_TAXONOMIES = [
     "hardcoded-secret",
     "mutable-default-arg",
     "bare-except",
-    "swallowed-exception",
     "weak-hash",
     "debug-mode-enabled",
     "xss",

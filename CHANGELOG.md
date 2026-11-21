@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.4
+
+- Withdrew `jvm-empty-catch`. An audit of all 60 findings on Signal-Android at
+  `8959dc6` found 0 true positives: 55 were deliberate cleanup, optional
+  work, or parse/validation control flow, and 5 were mechanically false. The
+  rate is 0/60, so the rule cannot hold the defect tier; the reason is that
+  whether a catch may swallow is intent, and intent is not line-local. The
+  measurement is recorded in `references/defect-rules.md` under "Considered
+  and rejected".
+- Fixed the literal masking that produced the 5 false positives. A catch body
+  that is a string literal or template (`""`, `"Unknown"`, `"Error: ${e}"`)
+  was blanked to whitespace and read as an empty body. Masking now keeps the
+  opening quote, so a literal is still a body and a comment still is not. The
+  five Signal shapes are fixtures, and the helper is tested on each.
+- `jvm-weak-hash` blast is 3, not 4. Detection is certain, severity is
+  contextual: MD5 as a bucketing or dictionary key has no integrity role. A
+  `WeakHashBucketing` fixture records that shape and is expected to fire.
+- `detect` prints per-rule incidence: every rule that ran, with its hit count
+  in this scan. A rule at 0 was exercised and found nothing; a rule missing
+  from the line never ran because no file of its language was scanned. "0
+  findings" is now visibly unexercised rather than clean.
+- The rule count is 26 in README, `SKILL.md`, and `references/defect-rules.md`,
+  matching `META`. `swallowed-exception` is a failure-mode taxonomy only;
+  `DEFECT_TAXONOMIES` no longer lists it.
+- Measured on Signal-Android at `8959dc6`: `detect` returns 1 finding
+  (`jvm-weak-hash`), down from 61 (60 empty catch, 1 weak hash). The five
+  false shapes produce nothing.
+
 ## 0.4.3
 
 - Removed `jvm-log-only-catch` and `jvm-http-no-timeout`. Both had been
