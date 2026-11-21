@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.3
+
+- Removed `jvm-log-only-catch` and `jvm-http-no-timeout`. Both had been
+  measured and rejected before 0.4.2 — 0/4 precision and ~25% — and 0.4.2
+  shipped them as active anyway. That was a release error, not a judgment
+  call: the two rules added 349 findings to Signal-Android, buried the 61 that
+  the other rules prove, and made `references/defect-rules.md` list each of
+  them twice, once as active and once as rejected. 0.4.3 withdraws the
+  release's headline change rather than repairing it.
+- The JVM detector is back to five rules: `jvm-exec-injection`,
+  `jvm-sql-injection`, `jvm-empty-catch`, `jvm-weak-hash`, and
+  `jvm-object-input-stream`. `missing-timeout` is a failure-mode taxonomy
+  again, not a defect taxonomy, because no defect rule emits it. The fixtures
+  and firing tests added for the two rules are gone; the log-then-throw and
+  log-then-return fixtures stay as silent cases for `jvm-empty-catch`.
+- README, `SKILL.md`, and `references/defect-rules.md` state 27 rules, and a
+  drift test now compares every stated count and the active rule table with
+  `META`, so a rule cannot be documented as active and rejected at once.
+- Measured on Signal-Android at `8959dc6`: `detect` returns 61 findings —
+  60 `jvm-empty-catch` and 1 `jvm-weak-hash` — down from 410 (60 empty catch,
+  345 log-only catch, 4 no-timeout, 1 weak hash). The pre-0.4.2 detector run
+  on the same tree returns the identical 61 findings at the same lines, so
+  the removal restores the baseline exactly. The 63 figure recorded when the
+  rules were rejected does not reproduce on this tree; 61 is the measured
+  baseline.
+
 ## 0.4.2
 
 - Two JVM rules read past the line that matched. `jvm-http-no-timeout` fires on
