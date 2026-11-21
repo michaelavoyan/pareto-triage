@@ -114,3 +114,19 @@ Withdrawn: a line-local rule cannot see defaults or a cloned configuration, so i
 Fires on a catch whose body only logs. On Signal-Android it produced 341 findings; an evenly spaced 21-finding sample held about 5 real swallowed failures, the rest being cleanup, optional UI, telemetry, or a logged failure followed by a deliberate `null`/`emptySet()` default.
 
 Withdrawn: whether a catch may swallow is the judgment phase's job, and `taxonomy.md` already names the optional-operation counter-example. A structural rule cannot read intent, and at 25% precision the 341 findings buried the findings that are true — 61 of them on the Signal tree measured for 0.4.3.
+
+### `jvm-trust-all` — rejected, 0 findings, true-positive rate not measurable
+
+Fires when a `checkServerTrusted` or `checkClientTrusted` declaration in a trust manager has an empty body, or a body that only logs, so every chain is accepted. The body is read, not assumed: a throw, a delegation, or any read of the certificates silences it.
+
+On Signal-Android the rule produced no findings across 8,906 non-test Java/Kotlin files (1,130 test files excluded by `detect`). Every trust-manager method in the tree is sound by this rule: `SelfSignedIdentity.ApprovingTrustManager.checkServerTrusted` checks the chain length, `BlacklistingTrustManager.checkServerTrusted` walks the chain and then delegates, its `checkClientTrusted` delegates, and the remaining `checkClientTrusted` throws. Including test code, the only matching shape in the whole tree is `BlacklistingTrustManagerTest.kt:125`, a test double whose `checkClientTrusted` is `= Unit` because the test never uses client certificates; test code is out of scope and that instance is not an application defect. Fixtures and unit tests covered the firing shapes plus throwing, chain-inspecting, delegating, and Kotlin expression-body forms before withdrawal.
+
+Withdrawn: zero findings means zero findings to inspect, so the rule cannot show 70% true positives; 0/0 is not a pass. The rule was precise on what it did not match, but incidence on Signal-Android is zero, and shipping it would claim coverage the corpus never exercised. Re-propose only with a corpus that contains a trust-all manager.
+
+### `jvm-hostname-verifier-true` — rejected, 0 findings, true-positive rate not measurable
+
+Fires when a `HostnameVerifier` implementation's `verify` body is only `return true;`, or a Kotlin lambda is `HostnameVerifier { _, _ -> true }`. A body that delegates or compares hostnames silences it.
+
+On Signal-Android the rule produced no findings across the same 8,906 files. The one `HostnameVerifier` use in app code, `ConscryptSignal.wrapHostnameVerifier`, delegates to `verifier.verify(hostname, session)`. No implementation, anonymous class, or lambda returns an unconditional `true`, in tests included. One Java implementation and one Kotlin lambda fired in the fixture, and delegating and comparing counterparts stayed quiet.
+
+Withdrawn: same arithmetic as `jvm-trust-all`. With no instance to inspect there is no true-positive rate to accept, and an unexercised rule claims coverage it never demonstrated. Re-propose only with a corpus that contains an unconditional verifier.
