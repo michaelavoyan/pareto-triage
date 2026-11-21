@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.4.5
+
+- Fixed two scope bugs found auditing the TypeScript rules against JobPilot.
+  Both were rules claiming more than the tree proved.
+- `cfg-secret-generic` read `.env` whether or not it was committed. JobPilot
+  gitignores `.env` and `git ls-files` lists only `.env.example`, yet the scan
+  reported a credential from `.env` at blast 4. Config-secret scanning is now
+  limited to paths `git ls-files` reports as tracked when the scanned tree is
+  inside a git work tree, and `scope.json` records
+  `secrets: {tracked_only, reason}`. Source-file secret rules are unchanged: a
+  key hardcoded in source is a finding whether or not the file is committed.
+  With no git binary, no repository, or a failed `ls-files`, every config file
+  is scanned and the reason is recorded.
+- `js-exec-interp` fired on any `exec(` with an interpolated template, so
+  ``db.exec(`SELECT … ${id}`)`` in a `node:sqlite` file was command injection at
+  blast 5. It now requires the file to import `child_process` and the call to
+  be `exec` or `execSync`. `execFile`/`execFileSync` fire only when the matched
+  line also passes `shell: true`. `spawn`/`spawnSync` are no longer matched:
+  without `shell: true` they take an argument vector, not a shell string. The
+  two resulting false negatives (`spawn` with `shell: true`, `execFile` with
+  the option on a later line) are recorded in `references/defect-rules.md`.
+- Fixtures: a git repo with a tracked `.env` (fires), the same bytes untracked
+  (silent, counted as skipped), an untracked source file holding a key (fires),
+  a non-git tree and a missing-git tree (fire, with the reason recorded), plus
+  the `node:sqlite` / `child_process` JavaScript pair.
+- Measured on JobPilot: `detect` returns 0 findings, down from 1
+  (`cfg-secret-generic` in the untracked `.env`), reported as
+  `secrets    git-tracked config files only, N untracked skipped`. Measured
+  on Signal-Android at `8959dc6`: still 1 finding (`jvm-weak-hash`), no
+  regression.
+
 ## 0.4.4
 
 - Withdrew `jvm-empty-catch`. An audit of all 60 findings on Signal-Android at
