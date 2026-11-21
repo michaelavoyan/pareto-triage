@@ -102,3 +102,19 @@ The generic rule ignores values that are code references: `process.env.TOKEN`, `
 ## Redaction
 
 A finding's `evidence` is quoted verbatim, which means a found secret is a published secret. `report` redacts evidence in `report.json` and `report.html` and lists every redaction in "Could not determine". `out/defects.jsonl` keeps the raw line — the evidence guard needs it — so that file must not be committed or shared. It is not part of the published artifact set.
+
+## Considered and rejected
+
+Rules that were implemented, measured, and withdrawn. Recorded so the measurement survives and nobody re-proposes them without new evidence.
+
+### `jvm-http-no-timeout` — rejected, 0/4 precision
+
+Fires on a client builder chain with no timeout call. On Signal-Android it produced four findings and none were defects: OkHttp applies 10 s connect/read/write defaults, and `taxonomy.md` says a library default is not a finding. One case (`SignalRestClient.kt:117`) clones the base client and sets both timeouts per call.
+
+Withdrawn: a line-local rule cannot see defaults or a cloned configuration, so it cannot distinguish absence from a default. Implementing it would require following a builder to its use sites — a dataflow change, not a regex.
+
+### `jvm-log-only-catch` — rejected, ~25% precision
+
+Fires on a catch whose body only logs. On Signal-Android it produced 341 findings; an evenly spaced 21-finding sample held about 5 real swallowed failures, the rest being cleanup, optional UI, telemetry, or a logged failure followed by a deliberate `null`/`emptySet()` default.
+
+Withdrawn: whether a catch may swallow is the judgment phase's job, and `taxonomy.md` already names the optional-operation counter-example. A structural rule cannot read intent, and 341 findings at 25% precision would have buried the 63 findings that are true.
