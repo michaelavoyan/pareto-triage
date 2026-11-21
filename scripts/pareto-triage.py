@@ -17,7 +17,8 @@ from lib.lang import (SUPPORTED_LABEL, frameworks, language_label, languages,
 from lib.entry import (extract_entrypoints, entrypoint_counts,
                        filter_entrypoints_by_language, ENTRY_LANGUAGE_FLOOR)
 from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
-from lib.rules import detect_defects, rule_coverage, rule_incidence
+from lib.rules import detect_defects, rule_coverage, rule_incidence, is_config_secret_file
+from lib.gitscope import secret_scope
 from lib.imports import compute_reach, entry_paths, read_aliases, seeds_from_entrypoints
 from lib.context import (extract_sites, load_sites, site_contains, MAX_SITES_DEFAULT,
                          MAX_SOURCE_LINES, SAMPLE_ORDERS, DEFAULT_SAMPLE_ORDER, DEFAULT_SEED)
@@ -295,14 +296,14 @@ def _print_rule_coverage(coverage):
         print("%s%-12s %s" % (prefix, row["lang"], detail))
 
 
-def _print_rule_incidence(files, findings):
+def _print_rule_incidence(files, findings, tracked=None):
     """Show every rule that ran with its hits, so zero means unexercised.
 
     Coverage says a detector existed for the language. This says the detector
     was actually pointed at the tree and found nothing, which is different
     from a rule that claimed coverage and was never exercised.
     """
-    pairs = ["%s %d" % (rule, hits) for rule, hits in rule_incidence(files, findings)]
+    pairs = ["%s %d" % (rule, hits) for rule, hits in rule_incidence(files, findings, tracked)]
     if not pairs:
         return
     print("rule hits  %s" % _wrap(pairs, len("rule hits  ")))
@@ -352,6 +353,7 @@ def cmd_gate(positional, flags):
     entrypoints = extract_entrypoints(files)
     entrypoints, ignored_languages = filter_entrypoints_by_language(entrypoints, supported)
     counts = entrypoint_counts(entrypoints)
+    secrets = secret_scope(walked["root"])
 
     reasons = []
     if not supported:
@@ -415,6 +417,7 @@ def cmd_gate(positional, flags):
             "unsupported": [e["lang"] for e in unsupported],
         },
         "rule_coverage": coverage,
+        "secrets": {"tracked_only": secrets["tracked_only"], "reason": secrets["reason"]},
         "frameworks": fw,
         "tests": tests,
         "entrypoint_kinds": counts,
@@ -710,6 +713,17 @@ def cmd_sampling(positional, flags):
     return 0
 
 
+def _print_secret_scope(secrets, skipped):
+    """Say which config files the secret rules read, and why."""
+    if secrets["tracked_only"]:
+        detail = "git-tracked config files only"
+        if skipped:
+            detail += ", %d untracked skipped" % skipped
+    else:
+        detail = "every config file (%s)" % secrets["reason"]
+    print("secrets    %s" % detail)
+
+
 def cmd_detect(positional, flags):
     repo, out_dir = _paths(positional, flags)
     scope = _load_scope(out_dir)
@@ -729,7 +743,16 @@ def cmd_detect(positional, flags):
     test_files = len(walked["files"]) - len(scanned)
     coverage = rule_coverage(scanned)
     unruled = _unruled_languages(coverage, set(scope["languages"]["supported"]))
-    findings, warnings = detect_defects(scanned)
+    secrets = secret_scope(walked["root"])
+    recorded = scope.get("secrets") or {}
+    if recorded.get("tracked_only") != secrets["tracked_only"]:
+        print("warning    secret scope changed since gate: %s" % secrets["reason"])
+    tracked = secrets["tracked"] if secrets["tracked_only"] else None
+    skipped_secrets = sum(
+        1 for f in scanned
+        if tracked is not None and f["rel"] not in tracked
+        and is_config_secret_file(f["rel"], f["ext"]))
+    findings, warnings = detect_defects(scanned, tracked)
 
     entry_files = {e["file"] for e in scope["entrypoints"]}
     seeds = seeds_from_entrypoints(scope["entrypoints"])
@@ -770,7 +793,8 @@ def cmd_detect(positional, flags):
     print("files      %s scanned, %s skipped as test code"
           % (num(len(scanned)), num(test_files)))
     _print_rule_coverage(coverage)
-    _print_rule_incidence(scanned, findings)
+    _print_secret_scope(secrets, skipped_secrets)
+    _print_rule_incidence(scanned, findings, tracked)
     print("findings   %d" % len(findings))
     for taxonomy, count in sorted(by_taxonomy.items(), key=lambda kv: -kv[1]):
         print("  %-28s %d" % (taxonomy, count))
