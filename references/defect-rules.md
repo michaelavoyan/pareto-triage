@@ -43,10 +43,14 @@ Swift and Objective-C are not in this file because there are no rules for them. 
 | `jvm-exec-injection` | command-injection | 5 | 2 | `Runtime.getRuntime().exec(` or `ProcessBuilder(` with `+` on the same line, where a `+` operand is not a compile-time constant |
 | `jvm-sql-injection` | sql-injection | 5 | 2 | `executeQuery`/`executeUpdate`/`execute` with `+` on the same line and a statement verb (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE INTO`) inside the call |
 | `jvm-empty-catch` | swallowed-exception | 4 | 3 | a `catch (...)` block whose body is empty or comments only |
+| `jvm-http-no-timeout` | missing-timeout | 4 | 3 | `OkHttpClient.Builder()`/`new OkHttpClient.Builder()` or `HttpClient.newBuilder()` whose statement sets no `callTimeout`, `readTimeout`, `writeTimeout`, `connectTimeout`, or `.timeout(` |
+| `jvm-log-only-catch` | swallowed-exception | 3 | 3 | a `catch (...)` block whose body only logs or prints and then falls through |
 | `jvm-weak-hash` | weak-hash | 4 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
 | `jvm-object-input-stream` | unsafe-deserialization | 5 | 3 | `new ObjectInputStream(` |
 
-The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-empty-catch` reads forward only far enough to prove the body holds nothing but whitespace or comments; an unbalanced block is skipped rather than guessed.
+The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-empty-catch` reads forward only far enough to prove the body holds nothing but whitespace or comments; an unbalanced block is skipped rather than guessed. `jvm-log-only-catch` uses the same brace matcher and also skips an unbalanced block.
+
+Two JVM rules read past the matched line. `jvm-http-no-timeout` follows the builder expression to the end of its statement (a top-level `;` in Java, or the last line of a Kotlin chain) and stays silent if any timeout setter appears anywhere in it. It fires only on a builder constructed in the expression: `clientBuilder.build()` and a builder received as a parameter prove nothing about absence. `jvm-log-only-catch` proves the body has at least one top-level statement, that every top-level statement is a logging or printing call, and that no `throw`, `return`, `break`, or `continue` sits beside them. Anything else in the body silences it.
 
 Line-local precision needs one more test each. `execute(` is a name shared by SQL statements, executors, and callback dispatchers, so `jvm-sql-injection` also requires a statement verb inside the call's parentheses: `keyedExecutor.execute("Call::" + id, …)` is quiet, `stmt.execute("DELETE FROM t WHERE id = " + id)` is not. `jvm-exec-injection` requires at least one `+` operand that is not a compile-time constant: a lowercase name, a field, a parameter, an array element, or a call is a value; `UPPER_SNAKE_CASE` names (`FILTER_SPEC`, `BuildConfig.ENDPOINT`), quoted literals, and numeric literals are constants. `exec("logcat -d " + FILTER_SPEC)` is a fixed command, not injection; `exec("convert " + path)` is. Both rules ignore calls inside comments and string literals.
 
@@ -68,8 +72,10 @@ Known false-positive sources, accepted for v1:
 - test fixtures that deliberately contain vulnerable patterns
 - generated code and vendored snippets below the ignore list
 - a trailing comment on a JVM code line, or an unrelated `+` on the same line as a JVM call, because the JVM rules are line-local and skip only lines that begin with `//`, `*`, or `/*`
+- `jvm-http-no-timeout` on an OkHttp builder that relies on the library's 10s connect/read/write defaults. The rule proves only that the statement sets no timeout; OkHttp supplies defaults, so the finding is a shape claim, not proof that a request can hang. `HttpClient.newBuilder()` has no equivalent default request timeout.
+- `jvm-log-only-catch` on a deliberately best-effort catch: closing a stream, releasing a codec, or emitting telemetry may log and continue because the caller's contract allows partial success. The rule proves the body logs and falls through, not that the failure mattered.
 
-Both are visible in the report's "could not determine" section via file counts.
+These are visible in the report's "could not determine" section via file counts.
 
 ## Adding a rule
 

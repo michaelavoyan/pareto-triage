@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.2
+
+- Two JVM rules read past the line that matched. `jvm-http-no-timeout` fires on
+  an `OkHttpClient.Builder()` or `HttpClient.newBuilder()` constructed in the
+  expression whose statement sets no `callTimeout`, `readTimeout`,
+  `writeTimeout`, `connectTimeout`, or `.timeout(`. The expression follows Java
+  to the top-level `;` and Kotlin through a chained call on the next line. A
+  builder supplied by a variable or a parameter stays silent: absence is not
+  visible in the expression. `missing-timeout` is now a defect taxonomy as well
+  as a failure-mode one.
+- `jvm-log-only-catch` fires on a `catch` whose every top-level statement is a
+  logging or printing call, using the same brace matcher as `jvm-empty-catch`.
+  A `throw`, `return`, `break`, `continue`, any non-log statement, or an
+  unbalanced block silences it. `jvm-empty-catch` does not also fire on a
+  log-only body.
+- Fixtures pin one firing and one silent case per rule, plus a builder supplied
+  as a parameter and log-then-throw / log-then-return shapes. `jvm-http-no-timeout`
+  is covered on Java and Kotlin, including a timeout on the next chain line.
+- Measured on Signal-Android: 63 findings before, 408 after. `jvm-http-no-timeout`
+  produced 4, all OkHttp builders. OkHttp applies 10s connect/read/write
+  defaults, and one of the four (`SignalRestClient`'s base client) is given its
+  timeouts later in `newCallClient`, so the rule puts a shape claim at the top
+  of the board rather than a proven hang. `jvm-log-only-catch` produced 341
+  findings, 5.4x the previous total; the inspected sample is mostly deliberate
+  best-effort handling (codec release, stream close, optional UI), which
+  `references/taxonomy.md` calls not a finding. Read both counts as shapes to
+  judge, not as defect totals.
+
 ## 0.4.1
 
 - The shape verdict now says what carries it. `ranked.json` gains

@@ -28,6 +28,7 @@ DEFECT_TAXONOMIES = [
     "mutable-default-arg",
     "bare-except",
     "swallowed-exception",
+    "missing-timeout",
     "weak-hash",
     "debug-mode-enabled",
     "xss",

@@ -58,11 +58,11 @@ The report also says what carries the verdict: an attribution sentence splits th
 
 ## How it decides
 
-27 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, empty `catch`, weak hashing, mutable defaults.
+29 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, empty or log-only `catch`, HTTP clients built without a timeout, weak hashing, mutable defaults.
 
-The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
+The judgement calls — whether a declared timeout is long enough, whether a logged failure is acceptable, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
 
-Java and Kotlin are scanned for entrypoints, reachability, and defects. Five JVM rules cover command injection (`Runtime.exec` or `ProcessBuilder` with concatenation), SQL built by concatenation, empty `catch`, `MessageDigest` with MD5 or SHA-1, and `new ObjectInputStream`. The secret rules run on `.java`, `.kt`, and `.kts` too.
+Java and Kotlin are scanned for entrypoints, reachability, and defects. Seven JVM rules cover command injection (`Runtime.exec` or `ProcessBuilder` with concatenation), SQL built by concatenation, empty `catch`, log-only `catch`, `OkHttpClient.Builder()`/`HttpClient.newBuilder()` with no timeout in the statement, `MessageDigest` with MD5 or SHA-1, and `new ObjectInputStream`. The secret rules run on `.java`, `.kt`, and `.kts` too.
 
 Swift and Objective-C support is reachability and site extraction only. `#import` resolves header paths against the scanned tree, falling back to a basename only when exactly one scanned file carries it; Swift target membership comes from `project.pbxproj`, so two Swift files are neighbours only when they share a target and one names a type the other declares. `import Module` is not an edge: it names a module, not a file, and it produced 97% of the graph on Signal-iOS while carrying no call information. Entrypoints are `@main`/`@UIApplicationMain`/`UIApplicationMain(`, app delegates, and `UIViewController`/`UIView` subclasses through four hops of project bases, including ObjC `@interface` declarations; `context` extracts Swift and Objective-C functions as candidate sites.
 
