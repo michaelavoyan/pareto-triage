@@ -16,7 +16,9 @@ FIXTURE = FIXTURES / "jvm-rules"
 PREFIX = "src/main/java/com/acme/"
 SAFE = PREFIX + "SafeCounterparts.java"
 CLEAN = [SAFE, PREFIX + "ConstantExec.java", PREFIX + "KeyedCallback.java",
-         PREFIX + "HttpTimeout.java", PREFIX + "HttpBuilderParameter.java",
+         # Log-then-throw and log-then-return were the shapes a rejected
+         # log-only-catch rule had to stay silent on. They remain silent here
+         # because neither body is empty.
          PREFIX + "LogThenThrow.java", PREFIX + "CatchReturnsError.java"]
 
 sys.path.insert(0, str(SCRIPTS))
@@ -27,8 +29,6 @@ EXPECTED = {
     PREFIX + "ExecInjection.java": "jvm-exec-injection",
     PREFIX + "SqlInjection.java": "jvm-sql-injection",
     PREFIX + "EmptyCatch.java": "jvm-empty-catch",
-    PREFIX + "HttpNoTimeout.java": "jvm-http-no-timeout",
-    PREFIX + "LogOnlyCatch.java": "jvm-log-only-catch",
     PREFIX + "WeakHash.java": "jvm-weak-hash",
     PREFIX + "ObjectInput.java": "jvm-object-input-stream",
 }
@@ -37,8 +37,6 @@ AXES = {
     "jvm-exec-injection": ("command-injection", 5, 2),
     "jvm-sql-injection": ("sql-injection", 5, 2),
     "jvm-empty-catch": ("swallowed-exception", 4, 3),
-    "jvm-http-no-timeout": ("missing-timeout", 4, 3),
-    "jvm-log-only-catch": ("swallowed-exception", 3, 3),
     "jvm-weak-hash": ("weak-hash", 4, 3),
     "jvm-object-input-stream": ("unsafe-deserialization", 5, 3),
 }
@@ -187,74 +185,6 @@ class JvmRuleTests(unittest.TestCase):
                 '    throw new IllegalStateException("{}");\n}\n')
         self.assertEqual(self.rules("A.java", text), [])
 
-    def test_http_builder_without_a_timeout_fires_on_the_builder_line(self):
-        text = ('OkHttpClient client = new OkHttpClient.Builder()\n'
-                '        .addInterceptor(i)\n'
-                '        .build();\n')
-        self.assertEqual(self.rules("A.java", text),
-                         [("jvm-http-no-timeout", 1, "OkHttpClient client = new OkHttpClient.Builder()")])
-
-    def test_http_builder_with_a_timeout_on_a_later_line_is_quiet(self):
-        text = ('OkHttpClient client = new OkHttpClient.Builder()\n'
-                '        .readTimeout(10, TimeUnit.SECONDS)\n'
-                '        .build();\n')
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_http_builder_with_a_timeout_helper_is_quiet(self):
-        text = 'HttpClient client = HttpClient.newBuilder().timeout(Duration.ofSeconds(5)).build();\n'
-        self.assertEqual(self.rules("A.java", text), [])
-
-    def test_java_http_client_without_a_timeout_fires(self):
-        text = 'HttpClient client = HttpClient.newBuilder().build();\n'
-        self.assertEqual(self.rules("A.java", text),
-                         [("jvm-http-no-timeout", 1, text.strip())])
-
-    def test_kotlin_http_builder_without_a_timeout_fires(self):
-        text = ('val client = OkHttpClient.Builder()\n'
-                '    .addInterceptor(i)\n'
-                '    .build()\n')
-        self.assertEqual(self.rules("A.kt", text),
-                         [("jvm-http-no-timeout", 1, "val client = OkHttpClient.Builder()")])
-
-    def test_kotlin_http_builder_with_a_timeout_on_the_next_line_is_quiet(self):
-        text = ('val client = OkHttpClient.Builder()\n'
-                '    .callTimeout(10, TimeUnit.SECONDS)\n'
-                '    .build()\n')
-        self.assertEqual(self.rules("A.kt", text), [])
-
-    def test_a_builder_supplied_by_a_variable_is_quiet(self):
-        self.assertEqual(self.rules("A.java", "OkHttpClient client = clientBuilder.build();\n"), [])
-
-    def test_log_only_catch_fires_on_the_catch_header(self):
-        text = ('try {\n    go();\n} catch (IOException e) {\n'
-                '    Log.e(TAG, "failed", e);\n}\n')
-        self.assertEqual(self.rules("A.java", text),
-                         [("jvm-log-only-catch", 3, "} catch (IOException e) {")])
-
-    def test_print_only_catch_fires(self):
-        text = ('try {\n    go();\n} catch (IOException e) {\n'
-                '    System.err.println(e);\n}\n')
-        self.assertEqual(self.rules("A.java", text),
-                         [("jvm-log-only-catch", 3, "} catch (IOException e) {")])
-
-    def test_print_stack_trace_only_catch_fires(self):
-        text = ('try {\n    go();\n} catch (IOException e) {\n'
-                '    e.printStackTrace();\n}\n')
-        self.assertEqual(self.rules("A.java", text),
-                         [("jvm-log-only-catch", 3, "} catch (IOException e) {")])
-
-    def test_kotlin_log_only_catch_fires(self):
-        text = ('fun parse(raw: String): Int {\n'
-                '    try {\n'
-                '        return raw.toInt()\n'
-                '    } catch (e: NumberFormatException) {\n'
-                '        Log.e(TAG, "bad", e)\n'
-                '    }\n'
-                '    return 0\n'
-                '}\n')
-        self.assertEqual(self.rules("A.kt", text),
-                         [("jvm-log-only-catch", 4, "} catch (e: NumberFormatException) {")])
-
     def test_log_then_throw_is_quiet(self):
         text = ('try {\n    go();\n} catch (IOException e) {\n'
                 '    Log.e(TAG, "failed", e);\n'
@@ -276,11 +206,11 @@ class JvmRuleTests(unittest.TestCase):
                 '    Log.e(TAG, "failed", e); retry();\n}\n')
         self.assertEqual(self.rules("A.java", text), [])
 
-    def test_log_only_catch_is_not_also_an_empty_catch(self):
+    def test_log_only_body_is_not_an_empty_catch(self):
         text = ('try {\n    go();\n} catch (IOException e) {\n'
                 '    Log.e(TAG, "failed", e);\n}\n')
         rules = [rule for rule, _, _ in self.rules("A.java", text)]
-        self.assertEqual(rules, ["jvm-log-only-catch"])
+        self.assertEqual(rules, [])
 
     def test_sha256_is_not_a_weak_hash(self):
         self.assertEqual(self.rules("A.java",
