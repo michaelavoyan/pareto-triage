@@ -31,12 +31,14 @@ The tables below list all 26 active rules.
 |---|---|---|---|---|
 | `js-eval` | code-injection | 5 | 2 | `eval(` |
 | `js-new-function` | code-injection | 5 | 2 | `new Function(` |
-| `js-exec-interp` | command-injection | 5 | 2 | `exec`/`spawn` on a template with `${` |
+| `js-exec-interp` | command-injection | 5 | 2 | `exec`/`execSync` on a template with `${`, in a file that imports `child_process` |
 | `js-tls-off` | tls-verification-disabled | 5 | 3 | `rejectUnauthorized: false` |
 | `js-secret-aws` | hardcoded-secret | 5 | 3 | `AKIA…` key |
 | `js-secret-pem` | hardcoded-secret | 5 | 3 | `BEGIN … PRIVATE KEY` |
 | `js-secret-stripe` | hardcoded-secret | 5 | 3 | `sk_live_…` |
 | `js-dangerous-html` | xss | 5 | 1 | `dangerouslySetInnerHTML` |
+
+`exec(` is not a shell call by itself: `db.exec(...)` on a SQLite handle, a query runner, and a process pool all use the name. `js-exec-interp` requires the file to import `child_process` (`import … from 'child_process'`, `require('child_process')`, or the `node:` form) and the call to be `exec` or `execSync`. `execFile` and `execFileSync` take a program and an argument vector and reach a shell only when the same line passes `shell: true`, so only that shape fires; an interpolated argument without the option is silent. `spawn` and `spawnSync` are not matched for the same reason: without `shell: true` an interpolated argument is one element of an argument vector, not a shell string. The cost is a false negative for `spawn(..., { shell: true })` and for `execFile` with the option on a later line. Both are recorded here rather than guessed at from a line that does not show the shell.
 
 ### Java / Kotlin (regex, comment lines skipped)
 
@@ -85,12 +87,22 @@ A rule without a negative fixture is a guess.
 
 Secrets are matched in `.env`, YAML, JSON, Terraform, TOML, INI, `.properties`, and `.conf` as well as source, because that is where they usually are. Source means `.py`, JavaScript/TypeScript, and `.java`/`.kt`/`.kts`, which reuse the same three patterns under the same rule ids. Only the secret rules run on the non-source files; code rules are meaningless there.
 
+A secret finding means a **committed** secret. When the scanned tree is inside a git work tree and `git` is available, the config-secret rules read only the paths `git ls-files` reports as tracked. An untracked, gitignored `.env` is not part of the repository, so reporting its contents as a committed secret is a false positive at blast 4; `detect` prints `secrets    git-tracked config files only, N untracked skipped`. Source-file secret rules are not narrowed: a key hardcoded in a `.py` file is a finding whether or not that file has been committed, because the source is what gets published.
+
+When the commit set cannot be established — git is not installed, the tree is not a repository, or `git ls-files` fails — the wider behaviour stands and `scope.json` records why:
+
+```json
+"secrets": {"tracked_only": false, "reason": "not inside a git work tree: commit status is unknown, so every config file is scanned"}
+```
+
+With a work tree the entry is `"tracked_only": true` and the reason names `git ls-files`. The field is written by `gate`, so the scope a scan used is inspectable after the fact; `detect` re-checks it and warns if the commit set changed.
+
 | Rule | Where | Matches |
 |---|---|---|
 | `py-secret-aws` | any scanned file | `AKIA` + 16 characters |
 | `py-secret-pem` | any scanned file | a private-key block header |
 | `py-secret-stripe` | any scanned file | `sk_live_` + 10 |
-| `cfg-secret-generic` | config files only | a credential key assigned a literal value |
+| `cfg-secret-generic` | tracked config files | a credential key assigned a literal value |
 
 The generic rule ignores values that are code references: `process.env.TOKEN`, `os.environ[...]`, and `${VAR}` are not secrets, and masking them would make the evidence say something false.
 

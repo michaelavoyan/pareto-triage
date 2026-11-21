@@ -78,6 +78,17 @@ PY_SAFE_LOADERS = {"SafeLoader", "CSafeLoader", "FullLoader", "BaseLoader"}
 SECRET_EXTS = {".yaml", ".yml", ".json", ".tf", ".tfvars", ".ini", ".properties",
                ".toml", ".cfg", ".conf"}
 
+
+def is_config_secret_file(rel, ext):
+    """True for a file only the config-secret rules read.
+
+    `.env` carries no extension, and `.env.local` carries an unrelated one, so
+    the basename is the signal for both. Source files are deliberately not
+    included: their secret rules are not narrowed to committed files.
+    """
+    return ext in SECRET_EXTS or rel.rsplit("/", 1)[-1].startswith(".env")
+
+
 SECRET_PATTERNS = [
     ("py-secret-aws", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("py-secret-pem", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
@@ -200,7 +211,6 @@ def _config_defects(text):
 JS_RULES = [
     ("js-eval", re.compile(r"\beval\s*\(")),
     ("js-new-function", re.compile(r"\bnew\s+Function\s*\(")),
-    ("js-exec-interp", re.compile(r"\b(?:exec|execSync|spawnSync|spawn)\s*\(\s*`[^`]*\$\{")),
     ("js-tls-off", re.compile(r"rejectUnauthorized\s*:\s*false")),
     ("js-secret-aws", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("js-secret-pem", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
@@ -208,15 +218,29 @@ JS_RULES = [
     ("js-dangerous-html", re.compile(r"dangerouslySetInnerHTML\s*=\s*\{\{")),
 ]
 
-JS_RULE_IDS = tuple(rule for rule, _ in JS_RULES)
+# `exec(` alone is not a shell call: a SQLite handle, a database driver, and a
+# process pool all use the name. The file must import child_process, and only
+# the two calls that turn a string into a shell command count. `spawn` and
+# `spawnSync` are not here: without `shell: true` they take a program and an
+# argument vector, so an interpolated argument is not a shell string.
+CHILD_PROCESS_IMPORT = re.compile(
+    r"""(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*)['"](?:node:)?child_process['"]""")
+JS_SHELL_CALL = re.compile(r"\b(?:exec|execSync)\s*\(\s*`[^`]*\$\{")
+# execFile/execFileSync take an argument vector too. They reach a shell only
+# when this line asks for one, so the option must be on the matched line.
+JS_EXECFILE_CALL = re.compile(r"\b(?:execFile|execFileSync)\s*\(\s*`[^`]*\$\{")
+JS_SHELL_OPTION = re.compile(r"\bshell\s*:\s*true\b")
+
+JS_RULE_IDS = tuple(rule for rule, _ in JS_RULES) + ("js-exec-interp",)
 
 
-def rule_ids_for_ext(ext):
-    """Rule ids the detector can emit for one extension; empty means none.
+def rule_ids_for_ext(ext, rel=None):
+    """Rule ids the detector can emit for one file; empty means none.
 
     Every branch in detect_defects has an entry here. A language whose files
     all return an empty tuple has no detector, which is reported instead of
-    being read as "scanned and clean".
+    being read as "scanned and clean". `rel` is needed for `.env`, which has
+    no extension of its own.
     """
     if ext in PY_EXT:
         return PY_RULE_IDS
@@ -224,7 +248,7 @@ def rule_ids_for_ext(ext):
         return JS_RULE_IDS
     if ext in JVM_EXT:
         return JVM_RULE_IDS
-    if ext in SECRET_EXTS:
+    if ext in SECRET_EXTS or (rel is not None and is_config_secret_file(rel, ext)):
         return CONFIG_RULE_IDS
     return ()
 
@@ -247,7 +271,7 @@ def rule_coverage(files):
         slot = by_lang.setdefault(
             lang, {"lang": lang, "files": 0, "files_with_rules": 0, "rules": set()})
         slot["files"] += 1
-        ids = rule_ids_for_ext(f["ext"])
+        ids = rule_ids_for_ext(f["ext"], f["rel"])
         if ids:
             slot["files_with_rules"] += 1
             slot["rules"].update(ids)
@@ -264,17 +288,23 @@ def rule_coverage(files):
     return {"by_language": rows}
 
 
-def rule_incidence(files, findings):
+def rule_incidence(files, findings, tracked=None):
     """Hits per rule for every rule that could run on these files.
 
     A zero is an exercised rule that found nothing: the detector read the
     files and the tree did not match. A rule absent from the list never ran
     because no file of its language was scanned, which is a blind spot and
-    already reported as coverage.
+    already reported as coverage. An untracked config file does not make a
+    config rule "exercised" when `tracked` restricts the scan: the rule was
+    never pointed at it.
     """
     applicable = set()
     for f in files:
-        applicable.update(rule_ids_for_ext(f["ext"]))
+        untracked_config = (tracked is not None and f["rel"] not in tracked
+                            and is_config_secret_file(f["rel"], f["ext"]))
+        if untracked_config:
+            continue
+        applicable.update(rule_ids_for_ext(f["ext"], f["rel"]))
     hits = {rule: 0 for rule in applicable}
     for finding in findings:
         if finding["rule"] in hits:
@@ -285,13 +315,25 @@ def rule_incidence(files, findings):
 def _js_defects(text):
     lines = text.split("\n")
     found = []
+
+    def add(rule, match):
+        line = text.count("\n", 0, match.start()) + 1
+        stripped = lines[line - 1].strip()
+        if stripped.startswith("//") or stripped.startswith("*"):
+            return
+        found.append((rule, line, stripped[:300]))
+
     for rule, pattern in JS_RULES:
         for match in pattern.finditer(text):
+            add(rule, match)
+
+    if CHILD_PROCESS_IMPORT.search(text):
+        for match in JS_SHELL_CALL.finditer(text):
+            add("js-exec-interp", match)
+        for match in JS_EXECFILE_CALL.finditer(text):
             line = text.count("\n", 0, match.start()) + 1
-            stripped = lines[line - 1].strip()
-            if stripped.startswith("//") or stripped.startswith("*"):
-                continue
-            found.append((rule, line, stripped[:300]))
+            if JS_SHELL_OPTION.search(lines[line - 1]):
+                add("js-exec-interp", match)
     return found
 
 
@@ -456,8 +498,14 @@ def _jvm_defects(text):
     return found
 
 
-def detect_defects(files):
-    """Return (findings, warnings). Findings are unranked: no reach/effort yet."""
+def detect_defects(files, tracked=None):
+    """Return (findings, warnings). Findings are unranked: no reach/effort yet.
+
+    `tracked` is the set of paths git reports as tracked, or None when the
+    commit set is unknown. It restricts the config-secret rules only: a
+    credential in an untracked `.env` is not committed, while a key hardcoded
+    in source is a finding whether or not that source is committed.
+    """
     findings = []
     warnings = []
     for f in files:
@@ -473,7 +521,9 @@ def detect_defects(files):
         elif f["ext"] in JVM_EXT:
             # The Java/Kotlin secret patterns are the shared ones: no duplicate rule ids.
             pairs = _jvm_defects(f["text"]) + _line_hits(f["text"], SECRET_PATTERNS)
-        elif f["ext"] in SECRET_EXTS or rel.rsplit("/", 1)[-1].startswith(".env"):
+        elif is_config_secret_file(rel, f["ext"]):
+            if tracked is not None and rel not in tracked:
+                continue
             pairs = _config_defects(f["text"])
         else:
             continue
