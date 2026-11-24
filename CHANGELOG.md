@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.5.0
+
+- Added `js-sql-template` (sql-injection, blast 5, silence 2): a template
+  literal with `${…}` passed as the first argument to `query`, `execute`,
+  `exec`, or `raw`. It fires only when the receiver names a database
+  (`db`, `database`, `pool`, `client`, `conn`, `statement`, `sql`) or the file
+  imports a SQL driver, and only when no values argument follows the template.
+  A parameter array (`query(sql, [ ... ])`), placeholder text with values
+  (`query("… ?", [id])`), a non-database receiver in a file with no driver
+  import, and a bare `query(` are silent. Fixtures:
+  `fixtures/express-app/src/sql.ts` (two firing shapes and three silent ones)
+  and `sql-raw.ts` (driver import). The rule count is 27.
+- Measured `js-sql-template` on JobPilot (`37aceae`) and Signal-Android
+  (`2dd5703`): 0 hits on both. JobPilot's SQL is all `prepare`/`exec` with
+  static text or `?` plus values, and Signal-Android has no
+  TypeScript/JavaScript application SQL. Its real-world precision is
+  therefore **unmeasured**, not 100; the fixtures are the evidence that it
+  fires and stays quiet where designed.
+- Rejected the Kotlin string-template extension of `jvm-sql-injection` after
+  measuring it: 12 findings on Signal-Android, all 12 deliberate identifier
+  interpolation (table/column names, `$table`, `${index * 500}`), 0 true
+  positives. The measurement and the hit list are in
+  `references/defect-rules.md`; the shape is a fixture asserted silent.
+- F1: `scope.json` and `ranked.json` now carry
+  `rule_incidence: {rule: hits}`. `detect` records it in the scan artifact, and
+  the report renders an appendix table of every shipped rule: hits in this
+  scan, and precision from `out/calibration.json` when it exists, otherwise
+  `unmeasured`. A rule that ran and found nothing reads `0 hits`; a rule whose
+  language was absent reads `0 hits (unexercised)`.
+- G1: `scripts/check_rule_counts.py` runs `gate` and `detect` on
+  `fixtures/jvm-rules` and `fixtures/express-app` and compares per-rule counts
+  with the checked-in `scripts/test/golden/rule-incidence.json`. A rule that
+  silently stops firing — or stops running — fails the new `rule-incidence` CI
+  job. Standard library only.
+
 ## 0.4.5
 
 - Fixed two scope bugs found auditing the TypeScript rules against JobPilot.
