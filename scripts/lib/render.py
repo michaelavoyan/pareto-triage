@@ -2,10 +2,17 @@
 
 import re
 from html import escape as _escape
+from pathlib import Path
 
+from .redact import redact
 from .rules import META
 
 MAX_ROWS = 500
+
+# Lines shown either side of the cited line in a top-five card, and the hard
+# cap on the block. Radius 3 gives 7 rows, which is the whole budget.
+CONTEXT_RADIUS = 3
+CONTEXT_MAX_LINES = 2 * CONTEXT_RADIUS + 1
 
 CSS = """
 :root { color-scheme: light; }
@@ -26,6 +33,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .card { border: 1px solid #e6e6e8; border-radius: 8px; padding: 14px 16px; margin: 0 0 12px; }
 .card h3 { margin: 0 0 6px; font-size: 16px; }
 .card .why { margin: 0 0 8px; }
+pre.context { margin: 0 0 10px; padding: 7px 0; overflow-x: auto;
+             font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+             background: #fafaf7; border: 1px solid #eaeae4; border-radius: 6px; }
+pre.context .line { display: block; padding: 0 12px 0 8px; white-space: pre; }
+pre.context .line.cited { background: #fdf3dc; box-shadow: inset 3px 0 0 #b25000; }
+pre.context .n { display: inline-block; width: 4ch; text-align: right; color: #9a9a9f; }
+pre.context .m { display: inline-block; width: 1.5ch; color: #b25000; }
 code { font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; background: #f4f4f6;
        padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 .meta { color: #6b6b70; font-size: 13px; }
@@ -66,6 +80,57 @@ def _slug(value):
 
 def _e(value):
     return _escape(str(value), quote=True)
+
+
+def source_context(root, file, line, evidence=""):
+    """Rows of (number, text, cited) around the cited line, read at report time.
+
+    Returns the cited line alone when the file cannot be read or the line is
+    out of range. That fallback is deliberate and silent: a report is often
+    rendered somewhere the tree is no longer present, and the quote the finding
+    carried is still true evidence. Nothing is invented to fill the block.
+
+    Text is read from the source, so it can hold anything the source holds —
+    including a secret on a neighbouring line. Every row goes through the same
+    redaction as the rest of the published report before it is rendered.
+    """
+    fallback = [(line, evidence or "", True)]
+    try:
+        number = int(line)
+    except (TypeError, ValueError):
+        return fallback
+    if not file or number < 1:
+        return fallback
+
+    path = Path(str(file))
+    if not path.is_absolute() and root:
+        path = Path(str(root)) / path
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return fallback
+
+    lines = text.splitlines()
+    if number > len(lines):
+        return fallback
+
+    rows = []
+    for index in range(max(1, number - CONTEXT_RADIUS),
+                       min(len(lines), number + CONTEXT_RADIUS) + 1):
+        masked, _rules = redact(lines[index - 1])
+        rows.append((index, masked, index == number))
+    return rows[:CONTEXT_MAX_LINES]
+
+
+def context_block(rows):
+    """The card's evidence block. Line numbers, cited row marked, all escaped."""
+    out = ["<pre class=\"context\">"]
+    for number, text, cited in rows:
+        out.append("<span class=\"line%s\"><span class=\"n\">%d</span>"
+                   "<span class=\"m\">%s</span>%s</span>"
+                   % (" cited" if cited else "", number, "›" if cited else " ", _e(text)))
+    out.append("</pre>")
+    return "".join(out)
 
 
 def verdict_sentence(shape_info):
@@ -252,7 +317,8 @@ def render(ranked, scope):
                    % (_e(_slug(sample.get("id", ""))), _e(sample.get("file", "")),
                       _e(sample.get("line", "")), _e(cluster["taxonomy"]), cluster["n_sites"],
                       "" if cluster["n_sites"] == 1 else "s"))
-        out.append("<p><code>%s</code></p>" % _e(sample.get("evidence", "")))
+        out.append(context_block(source_context(scope.get("root"), sample.get("file"),
+                                                sample.get("line"), sample.get("evidence"))))
 
         capped = bool(sample.get("confidence_capped"))
         confidence = sample.get("confidence") or "med"

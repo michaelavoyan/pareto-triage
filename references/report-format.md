@@ -38,6 +38,11 @@ Per item:
 
 - **What breaks** — plain language, one sentence, no jargon. "Stripe retries are charged twice."
 - **Evidence** — quoted line, `file:line` linking to the finding's row in §7.
+- **Context** — that line with up to three either side, in a small monospace
+  block, read from the file when `report` runs and capped at seven lines. The
+  cited line is marked. If the file is gone, unreadable, or the line is out of
+  range, the block shows the quoted line alone: no error, and nothing invented
+  to fill it. Context is redacted exactly like the quote.
 - **Counter-evidence** — the sentence you owe the reader.
 - **Effort** — band plus drivers, printed as measured ("1 file, 0 importers"), or "unavailable" when they were not computed. Never a plausible constant.
 - **Confidence** — high / med / low, and why: "(capped: no test runner detected)", "(tool detector)", "(model)".

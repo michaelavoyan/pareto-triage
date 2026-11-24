@@ -58,7 +58,9 @@ The report also says what carries the verdict: an attribution sentence splits th
 
 ## How it decides
 
-26 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, weak hashing, mutable defaults.
+26 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, weak hashing, mutable defaults. That is the whole detector tier, and most of it is unmeasured. On the two real corpora it has been pointed at, the only incidence was a security rule: Signal-Android (828k lines) gave 1 finding, JobPilot (10k lines) gave 0 once the secret rule was limited to committed files.
+
+A zero from a rule is not a clean bill. The report appendix lists every shipped rule with its hits in that scan; a rule the scan never exercised reads `0 hits (unexercised)` and its precision reads `unmeasured`.
 
 The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
 
