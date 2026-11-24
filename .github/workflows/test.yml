@@ -19,6 +19,10 @@ jobs:
             os: ubuntu-22.04
           - python-version: "3.12"
             os: ubuntu-latest
+          # The version pipeline.yml and release.yml already run; the suite has
+          # to pass on it, not only the CLIs.
+          - python-version: "3.15"
+            os: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
