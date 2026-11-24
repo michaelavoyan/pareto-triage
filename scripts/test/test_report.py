@@ -246,15 +246,28 @@ class InsufficientShapeTests(unittest.TestCase):
         self.assertNotIn('class="verdict shortcut"', html)
 
     def test_two_clusters_agree_between_ladder_and_verdict(self):
+        # Two taxonomies in one reachable file: the insufficient-shape path.
+        # express-app now carries three (SQL, code, TLS), so it cannot pin this.
         with tempfile.TemporaryDirectory() as tmp:
-            out = Path(tmp)
-            pipeline(FIXTURES / "express-app", out)
+            repo = Path(tmp) / "repo"
+            (repo / "src").mkdir(parents=True)
+            (repo / "src" / "app.py").write_text(
+                "import os\n"
+                "from flask import Flask\n"
+                "app = Flask(__name__)\n"
+                "\n"
+                "@app.route('/run')\n"
+                "def run(cmd):\n"
+                "    os.system(cmd)\n"
+                "    return eval(cmd)\n", encoding="utf-8")
+            out = Path(tmp) / "out"
+            pipeline(repo, out)
             ranked = json.loads((out / "ranked.json").read_text())
             self.assertEqual(ranked["shape"]["verdict"], "insufficient")
             self.assertFalse(ranked["pareto"]["shortcut"])
             self.assertTrue(all(not row["shortcut"] for row in ranked["pareto_ladder"]))
 
-            result = run(["report", FIXTURES / "express-app", "--out", out])
+            result = run(["report", repo, "--out", out])
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("verdict    insufficient", result.stdout)
             html = (out / "report.html").read_text()
@@ -362,6 +375,39 @@ class AttributionReportTests(unittest.TestCase):
             self.assertEqual(set(block[name]),
                              {"clusters", "findings", "impact", "share", "top", "verdict"})
             self.assertEqual(set(block[name]["top"]), {"clusters", "impact", "share"})
+
+
+class RuleIncidenceAppendixTests(unittest.TestCase):
+    """F1: the report says which rules ran, how often, and whether that is measured."""
+
+    def build(self, tmp, calibration=None):
+        out = Path(tmp)
+        pipeline(FIXTURES / "express-app", out)
+        if calibration is not None:
+            (out / "calibration.json").write_text(json.dumps(calibration), encoding="utf-8")
+        result = run(["report", FIXTURES / "express-app", "--out", out])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return out, (out / "report.html").read_text(), json.loads((out / "report.json").read_text())
+
+    def test_unexercised_rules_are_labelled_and_precision_is_unmeasured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _out, html, published = self.build(tmp)
+        self.assertIn("Appendix — rule incidence", html)
+        self.assertIn("0 hits (unexercised)", html)
+        self.assertIn("unmeasured", html)
+        # A rule that ran and found nothing must not be called unexercised.
+        self.assertIn("<tr><td><code>js-exec-interp</code></td><td>0 hits</td>", html)
+        self.assertEqual(published["rule_incidence"]["js-sql-template"], 3)
+
+    def test_a_calibration_file_supplies_precision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _out, html, _published = self.build(tmp, calibration={
+                "precision": 0.8, "filled": 20, "threshold": 0.7, "status": "pass",
+                "by_taxonomy": {"sql-injection": {"checked": 5, "precision": 0.6}},
+            })
+        self.assertIn("0.60 (sql-injection, n=5)", html)
+        self.assertIn("0.80 (all judged findings, not this rule)", html)
+        self.assertNotIn("unmeasured", html)
 
 
 if __name__ == "__main__":

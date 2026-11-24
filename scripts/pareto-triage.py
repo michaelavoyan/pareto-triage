@@ -781,6 +781,13 @@ def cmd_detect(positional, flags):
     target = out_dir / "defects.jsonl"
     target.write_text("".join(json.dumps(f, sort_keys=True) + "\n" for f in findings), encoding="utf-8")
 
+    # Incidence is an input to the report appendix and to the CI guard: which
+    # rules ran, and how often each matched. It belongs in the scan artifact,
+    # not only on stdout, so a published run can be audited after the fact.
+    incidence = dict(rule_incidence(scanned, findings, tracked))
+    scope["rule_incidence"] = incidence
+    (out_dir / "scope.json").write_text(json.dumps(scope, indent=2) + "\n", encoding="utf-8")
+
     by_taxonomy = {}
     for finding in findings:
         by_taxonomy[finding["taxonomy"]] = by_taxonomy.get(finding["taxonomy"], 0) + 1
@@ -1010,6 +1017,10 @@ def cmd_rank(positional, flags):
 
     rule_rows = (scope.get("rule_coverage") or rule_coverage(walked["files"]))["by_language"]
     supported_langs = set(scope["languages"]["supported"])
+    incidence = scope.get("rule_incidence")
+    if incidence is None:
+        scanned = [f for f in walked["files"] if not is_test_path(f["rel"])]
+        incidence = dict(rule_incidence(scanned, defects or []))
 
     could_not_determine = []
     if failure_modes is None:
@@ -1078,6 +1089,7 @@ def cmd_rank(positional, flags):
             "sites_unjudged": coverage["sites_unjudged"],
         },
         "rule_coverage": {"by_language": rule_rows},
+        "rule_incidence": incidence,
         "shape": shape_info,
         "attribution": attribution_info,
         "quadrant": quad,
