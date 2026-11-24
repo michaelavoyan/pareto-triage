@@ -82,9 +82,10 @@ class SampleOrderTests(unittest.TestCase):
 
     def test_ranked_mode_keeps_the_old_order(self):
         self.context("--sample-order", "ranked")
+        # Five seats over reach 3 (4 sites) and reach 2 (6): two and three.
         self.assertEqual(kept(self.out), [("cli.py", "main"), ("cli.py", "alpha"),
-                                          ("cli.py", "beta"), ("hub.py", "run"),
-                                          ("hub.py", "one")])
+                                          ("hub.py", "run"), ("hub.py", "one"),
+                                          ("hub.py", "two")])
 
     def test_random_mode_reaches_a_deep_file_that_ranked_never_reaches(self):
         # z_deep.py sorts last, so the ranked order spends all five slots on
@@ -112,10 +113,12 @@ class SampleOrderTests(unittest.TestCase):
     def test_sample_json_records_the_method(self):
         result = self.context("--sample-order", "ranked", "--seed", "9")
         payload = json.loads((self.out / "sample.json").read_text())
-        self.assertEqual(payload, {"mode": "ranked", "seed": 9,
+        self.assertEqual(payload, {"mode": "ranked", "order": "ranked", "seed": 9,
                                    "population": 10, "kept": 5, "per_file": 3,
-                                   "judgeable": {"candidates": 10, "filtered": 0,
-                                                 "fallback": 0}})
+                                   "judgeable": 10,
+                                   "judgeable_detail": {"candidates": 10, "filtered": 0,
+                                                        "fallback": 0},
+                                   "strata": {"2": 3, "3": 2}})
 
         self.assertIn("sample     ranked, seed 9: kept 5 of 10 candidates, max 3 per file",
                       result.stdout)
@@ -188,6 +191,62 @@ class SamplingWarningTests(unittest.TestCase):
             result = run(["sampling", FIXTURES / "express-app", "--out", out])
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertNotIn("compares random against random", result.stderr)
+
+
+class CoverageSamplingTests(unittest.TestCase):
+    """`--coverage` sizes the sample from the judgeable population."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.out = Path(self._tmp.name) / "out"
+        result = run(["gate", FIXTURES / "sample-order", "--min-loc", "1", "--out", self.out])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def context(self, *extra):
+        return run(["context", FIXTURES / "sample-order", "--out", self.out] + list(extra))
+
+    def test_half_the_judgeable_population_is_kept_with_strata(self):
+        result = self.context("--coverage", "0.5")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads((self.out / "sample.json").read_text())
+        self.assertEqual(payload["mode"], "coverage")
+        self.assertEqual(payload["fraction"], 0.5)
+        self.assertEqual(payload["judgeable"], 10)
+        self.assertEqual(payload["kept"], 5)
+        self.assertEqual(sum(payload["strata"].values()), 5)
+        self.assertEqual(set(payload["strata"]), {"2", "3"})
+        self.assertIn("coverage 0.500", result.stdout)
+
+    def test_the_fraction_rounds_up_and_never_drops_below_one(self):
+        result = self.context("--coverage", "0.01")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads((self.out / "sample.json").read_text())
+        self.assertEqual(payload["kept"], 1)
+
+    def test_full_coverage_keeps_every_judgeable_site(self):
+        result = self.context("--coverage", "1")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        payload = json.loads((self.out / "sample.json").read_text())
+        self.assertEqual(payload["kept"], 10)
+        self.assertEqual(sum(payload["strata"].values()), 10)
+
+    def test_coverage_and_limit_are_mutually_exclusive(self):
+        result = self.context("--coverage", "0.5", "--limit", "5")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("mutually exclusive", result.stderr)
+
+    def test_a_fraction_outside_zero_to_one_is_refused(self):
+        for value in ("0", "-0.5", "1.5", "half"):
+            result = self.context("--coverage", value)
+            self.assertEqual(result.returncode, 2, value)
+            self.assertIn("--coverage", result.stderr)
+
+    def test_the_same_fraction_and_seed_keep_the_same_sites(self):
+        self.context("--coverage", "0.5", "--seed", "7")
+        first = kept(self.out)
+        self.context("--coverage", "0.5", "--seed", "7")
+        self.assertEqual(kept(self.out), first)
 
 
 if __name__ == "__main__":

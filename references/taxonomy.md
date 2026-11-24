@@ -86,7 +86,7 @@ Thirteen categories. Nothing outside this list is a valid failure-mode finding. 
 
 ## Defect-only taxonomies
 
-The thirteen headings above are the complete list of failure modes, and phase 2 may propose nothing outside it. A tool-proven defect may also carry a taxonomy that names the construct rather than a failure shape: `weak-hash` (`MessageDigest` with MD5 or SHA-1) is one. `swallowed-exception` is a failure-mode taxonomy only: `jvm-empty-catch` was withdrawn at 0/60 precision, so no defect rule emits it, the same way `missing-timeout` is a failure mode with no defect rule. The rule that proves each construct is listed in `references/defect-rules.md`.
+The thirteen headings above are the complete list of failure modes, and phase 2 may propose nothing outside it. A tool-proven defect may also carry a taxonomy that names the construct rather than a failure shape: `weak-hash` (`MessageDigest` with MD5 or SHA-1) is one. `missing-boundary-validation` and `non-atomic-write` are failure modes that also have defect rules while those rules are shipped; a withdrawn rule leaves the taxonomy as a phase-2 judgment only. `swallowed-exception` is a failure-mode taxonomy only: `jvm-empty-catch` was withdrawn at 0/60 precision, so no defect rule emits it, the same way `missing-timeout` is a failure mode with no defect rule. The rule that proves each construct is listed in `references/defect-rules.md`.
 
 ## Rejection rules
 

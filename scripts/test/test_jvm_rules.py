@@ -30,7 +30,10 @@ CLEAN = [SAFE, PREFIX + "ConstantExec.java", PREFIX + "KeyedCallback.java",
          # Signal-Android audit. The rule is withdrawn; these files prove the
          # masking helper does not read their literal bodies as empty.
          KOTLIN + "NameCollisionTables.kt", KOTLIN + "LogSectionSystemInfo.kt",
-         KOTLIN + "RingRtcDynamicConfiguration.kt", KOTLIN + "WebView.kt"]
+         KOTLIN + "RingRtcDynamicConfiguration.kt", KOTLIN + "WebView.kt",
+         # The same two writes inside a transaction, and a method with one
+         # write: both must stay quiet for the transaction rule.
+         PREFIX + "TransactionalWrite.java"]
 
 sys.path.insert(0, str(SCRIPTS))
 from lib.rules import _blank_noncode, detect_defects  # noqa: E402
@@ -42,6 +45,7 @@ EXPECTED = {
     PREFIX + "WeakHash.java": "jvm-weak-hash",
     PREFIX + "WeakHashBucketing.java": "jvm-weak-hash",
     PREFIX + "ObjectInput.java": "jvm-object-input-stream",
+    PREFIX + "NonAtomicWrite.java": "jvm-write-without-transaction",
 }
 
 AXES = {
@@ -49,6 +53,7 @@ AXES = {
     "jvm-sql-injection": ("sql-injection", 5, 2),
     "jvm-weak-hash": ("weak-hash", 3, 3),
     "jvm-object-input-stream": ("unsafe-deserialization", 5, 3),
+    "jvm-write-without-transaction": ("non-atomic-write", 3, 2),
 }
 
 

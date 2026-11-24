@@ -8,7 +8,7 @@ Swift and Objective-C are not in this file because there are no rules for them. 
 
 ## Rules
 
-The tables below list all 26 active rules.
+The tables below list all 28 active rules.
 
 ### Python (AST-based, `ast.parse`)
 
@@ -37,8 +37,11 @@ The tables below list all 26 active rules.
 | `js-secret-pem` | hardcoded-secret | 5 | 3 | `BEGIN … PRIVATE KEY` |
 | `js-secret-stripe` | hardcoded-secret | 5 | 3 | `sk_live_…` |
 | `js-dangerous-html` | xss | 5 | 1 | `dangerouslySetInnerHTML` |
+| `js-unvalidated-input` | missing-boundary-validation | 3 | 3 | `req.body.X`, `req.query.X`, or `req.params.X` reaching `query`/`execute`/`prepare`/`run` or a shell call in a route file |
 
 `exec(` is not a shell call by itself: `db.exec(...)` on a SQLite handle, a query runner, and a process pool all use the name. `js-exec-interp` requires the file to import `child_process` (`import … from 'child_process'`, `require('child_process')`, or the `node:` form) and the call to be `exec` or `execSync`. `execFile` and `execFileSync` take a program and an argument vector and reach a shell only when the same line passes `shell: true`, so only that shape fires; an interpolated argument without the option is silent. `spawn` and `spawnSync` are not matched for the same reason: without `shell: true` an interpolated argument is one element of an argument vector, not a shell string. The cost is a false negative for `spawn(..., { shell: true })` and for `execFile` with the option on a later line. Both are recorded here rather than guessed at from a line that does not show the shell.
+
+`js-unvalidated-input` is the only JS rule that reads past one line. It requires a route registration (`app`/`router`/`server`/`fastify` plus a verb) in the file, then follows a value from `req.body.X`, `req.query.X`, or `req.params.X` — directly or through one assignment — to a DB method (`query`, `execute`, `prepare`, `run`) or, in a file importing `child_process`, a shell call. A validator import or call before the sink (`zod`, `joi`, `yup`, `express-validator`, `celebrate`) silences the file, and `Number(...)`, `parseInt(...)`, or `JSON.parse(...)` on the same statement counts as the parse for that scalar. It is one hop, not dataflow: a value copied through a second function is missed, and a validator that runs after the sink does not silence it.
 
 ### Java / Kotlin (regex, comment lines skipped)
 
@@ -48,10 +51,13 @@ The tables below list all 26 active rules.
 | `jvm-sql-injection` | sql-injection | 5 | 2 | `executeQuery`/`executeUpdate`/`execute` with `+` on the same line and a statement verb (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE INTO`) inside the call |
 | `jvm-weak-hash` | weak-hash | 3 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
 | `jvm-object-input-stream` | unsafe-deserialization | 5 | 3 | `new ObjectInputStream(` |
+| `jvm-write-without-transaction` | non-atomic-write | 3 | 2 | two DB writes (`insert`/`update`/`delete`/`replace`/`upsert`/`execSQL`) in one method with no transaction call |
 
 The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-weak-hash` proves the algorithm at the line, never its role: an MD5 used only to bucket a value — a cache key, a dictionary key, a display-name collision digest — fires the same as an MD5 guarding a signature. Detection is certain, severity is contextual, so blast is 3 rather than 5. The `WeakHashBucketing` fixture is that shape and is expected to fire.
 
 Line-local precision needs one more test each. `execute(` is a name shared by SQL statements, executors, and callback dispatchers, so `jvm-sql-injection` also requires a statement verb inside the call's parentheses: `keyedExecutor.execute("Call::" + id, …)` is quiet, `stmt.execute("DELETE FROM t WHERE id = " + id)` is not. `jvm-exec-injection` requires at least one `+` operand that is not a compile-time constant: a lowercase name, a field, a parameter, an array element, or a call is a value; `UPPER_SNAKE_CASE` names (`FILTER_SPEC`, `BuildConfig.ENDPOINT`), quoted literals, and numeric literals are constants. `exec("logcat -d " + FILTER_SPEC)` is a fixed command, not injection; `exec("convert " + path)` is. Both rules ignore calls inside comments and string literals.
+
+`jvm-write-without-transaction` reads method bodies with the same brace matcher `context` uses. It counts a write only when the receiver names a database (`db`, `database`, `writableDatabase`, `readableDatabase`, `SignalDatabase…`, a `…Database`/`…Dao` receiver, or a content resolver), so `Cipher.update` and `MessageDigest.update` do not count, and `execSQL` needs no receiver. Two writes with no `beginTransaction`, `inTransaction`, `withTransaction`, or `endTransaction` in the body fire once, at the first write. The rule cannot see a transaction opened by the caller, a `withinTransaction` extension, or the framework transaction around `onCreate`/`onUpgrade`; those limits are why its measured precision is recorded under "Considered and rejected".
 
 ## Effort for a rule match
 
