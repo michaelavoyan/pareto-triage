@@ -83,6 +83,18 @@ These are visible in the report's "could not determine" section via file counts.
 
 A rule without a negative fixture is a guess.
 
+## Rule-count guard
+
+`scripts/check_rule_counts.py` runs `gate` and `detect` on `fixtures/jvm-rules`
+and `fixtures/express-app`, reads `rule_incidence` from each `scope.json`, and
+compares it with `scripts/test/golden/rule-incidence.json`. A rule that stops
+firing, or that stops running because a language branch was dropped, fails CI.
+The guard is dependency-free and runs the real CLI, so it tests the shipped
+pipeline rather than a helper. After an intended count change, run
+`python3 scripts/check_rule_counts.py --write` and explain the new counts in
+the commit. A golden update with no explanation is how a silent zero gets
+merged.
+
 ## Secrets outside source files
 
 Secrets are matched in `.env`, YAML, JSON, Terraform, TOML, INI, `.properties`, and `.conf` as well as source, because that is where they usually are. Source means `.py`, JavaScript/TypeScript, and `.java`/`.kt`/`.kts`, which reuse the same three patterns under the same rule ids. Only the secret rules run on the non-source files; code rules are meaningless there.
@@ -113,6 +125,24 @@ A finding's `evidence` is quoted verbatim, which means a found secret is a publi
 ## Considered and rejected
 
 Rules that were implemented, measured, and withdrawn. Recorded so the measurement survives and nobody re-proposes them without new evidence.
+
+### `jvm-sql-template` — rejected, 0/12 precision
+
+A Kotlin string template (`"SELECT … WHERE id = $id"`) passed to `query`, `raw`, `executeQuery`, `executeUpdate`, `execute`, or `exec`, with the existing statement-verb requirement. The candidate was a branch of `jvm-sql-injection`, not a new rule id.
+
+On Signal-Android at `2dd5703` it produced 12 findings across 8,906 non-test Java/Kotlin files. All 12 were `DELIBERATE`: every interpolation was an identifier — a table or column name, or a compile-time constant — which SQL cannot bind with `?`. None carried a value that could be a bound parameter. True positives 0, false negatives none observed, precision 0.00.
+
+| Where | Interpolated |
+|---|---|
+| `app/.../InternalSettingsFragment.kt:1412` | `${OneTimePreKeyTable.TABLE_NAME}` |
+| `app/.../ContactIndexDatabase.kt:303` | `${ROW_COLUMNS…}`, `$TABLE_NAME`, `$ID` (values are `?` + `arrayOf`) |
+| `app/.../AttachmentTable.kt:4172`, `:4200` | `$DATA_HASH_END`, `$REMOTE_KEY`, `$TABLE_NAME`, `$QUOTE`, … |
+| `app/.../V172_GroupMembershipMigration.kt:38` | `${index * 500}` (internal loop counter) |
+| `core/.../SQLiteDatabaseExtensions.kt:64`, `:610`, `:623` | `$table`, `$tableName` (callers pass constants) |
+| `core/.../SqlUtil.kt:78`, `:83`, `:135` | `$table` |
+| `lib/spinner/.../DatabaseUtil.kt:30` | `$table` |
+
+Withdrawn: a Kotlin template is the same syntax for a value and for an identifier, and the line does not say which. The corpus answer was every identifier and no values, so the branch would have spent the defect tier's credibility on code the maintainers wrote correctly. Narrowing it to comparison positions (`= $x`, `IN ($x)`) would have produced zero hits on both corpora: unmeasured, not precise. The firing shape stays in `fixtures/jvm-rules/src/main/kotlin/com/acme/SqlTemplate.kt` and is asserted silent.
 
 ### `jvm-empty-catch` — rejected, 0/60 precision
 
@@ -149,3 +179,11 @@ Fires when a `HostnameVerifier` implementation's `verify` body is only `return t
 On Signal-Android the rule produced no findings across the same 8,906 files. The one `HostnameVerifier` use in app code, `ConscryptSignal.wrapHostnameVerifier`, delegates to `verifier.verify(hostname, session)`. No implementation, anonymous class, or lambda returns an unconditional `true`, in tests included. One Java implementation and one Kotlin lambda fired in the fixture, and delegating and comparing counterparts stayed quiet.
 
 Withdrawn: same arithmetic as `jvm-trust-all`. With no instance to inspect there is no true-positive rate to accept, and an unexercised rule claims coverage it never demonstrated. Re-propose only with a corpus that contains an unconditional verifier.
+
+### `js-sql-template` — rejected, 0 findings, true-positive rate not measurable
+
+Fires on a template literal with `${` passed as the first argument to `query`, `execute`, `exec`, or `raw`, but only when the receiver names a database (`db`, `database`, `pool`, `client`, `conn`, `statement`, `sql`) or the file imports a SQL driver, and only when no values argument follows the template. A parameter array (`query(sql, [ ... ])`), placeholder text with values (`query("… ?", [id])`), a non-database receiver in a file with no driver import, and a bare `query(` are silent. Correct by construction on every shape it was built against: no known false positive, and the two scopes are proved before it fires.
+
+On JobPilot at `37aceae` it produced no findings across 111 non-test files, and on Signal-Android at `2dd5703` no findings across 8,906 non-test Java/Kotlin files. JobPilot's SQL is all `prepare`/`exec` with static text or `?` plus values, and Signal-Android has no TypeScript/JavaScript application SQL.
+
+Withdrawn: zero findings means zero findings to inspect, so the rule cannot show 70% true positives; 0/0 is not a pass. This is the same standard that withdrew `jvm-trust-all` and `jvm-hostname-verifier-true`. A rule that fires on no line of either measured corpus claims coverage the corpus never exercised, and shipping it would hide that gap behind a rule count. The silent shapes stay as `fixtures/express-app/src/sql.ts`, asserted by `scripts/test/test_sql_shapes.py` to produce no finding from any rule. Re-propose only with a corpus that contains SQL assembled from a JS template literal.

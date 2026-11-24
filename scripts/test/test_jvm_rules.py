@@ -18,6 +18,10 @@ PREFIX = "src/main/java/com/acme/"
 KOTLIN = "src/main/kotlin/com/acme/"
 SAFE = PREFIX + "SafeCounterparts.java"
 CLEAN = [SAFE, PREFIX + "ConstantExec.java", PREFIX + "KeyedCallback.java",
+         # The Kotlin template branch was measured at 0/12 true positives on
+         # Signal-Android: every hit interpolated a table or column name, not a
+         # value. The shape stays as a fixture for that rejection.
+         KOTLIN + "SqlTemplate.kt",
          # Log-then-throw and log-then-return were the shapes a rejected
          # log-only-catch rule had to stay silent on. They remain silent here
          # because neither body is empty.

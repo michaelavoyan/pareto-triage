@@ -316,12 +316,15 @@ def _js_defects(text):
     lines = text.split("\n")
     found = []
 
-    def add(rule, match):
-        line = text.count("\n", 0, match.start()) + 1
+    def add_at(rule, offset):
+        line = text.count("\n", 0, offset) + 1
         stripped = lines[line - 1].strip()
         if stripped.startswith("//") or stripped.startswith("*"):
             return
         found.append((rule, line, stripped[:300]))
+
+    def add(rule, match):
+        add_at(rule, match.start())
 
     for rule, pattern in JS_RULES:
         for match in pattern.finditer(text):
@@ -334,6 +337,7 @@ def _js_defects(text):
             line = text.count("\n", 0, match.start()) + 1
             if JS_SHELL_OPTION.search(lines[line - 1]):
                 add("js-exec-interp", match)
+
     return found
 
 

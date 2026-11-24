@@ -150,10 +150,13 @@ class JavaScriptShellCallTests(unittest.TestCase):
         return [(f["rule"], f["line"]) for f in self.js(text)]
 
     def test_a_database_exec_is_not_a_shell_call(self):
+        # `db.exec` on a SQLite handle is not a shell, and no rule claims a SQL
+        # template: the SQL rule was withdrawn for zero incidence.
         self.assertEqual(self.rules(
             "import { DatabaseSync } from 'node:sqlite';\n"
             "const db = new DatabaseSync('app.db');\n"
-            "db.exec(`SELECT * FROM t WHERE id = ${id}`);\n"), [])
+            "db.exec(`SELECT * FROM t WHERE id = ${id}`);\n"),
+            [])
 
     def test_exec_without_a_child_process_import_is_silent(self):
         self.assertEqual(self.rules("exec(`rm -rf ${dir}`);\n"), [])

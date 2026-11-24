@@ -3,6 +3,8 @@
 import re
 from html import escape as _escape
 
+from .rules import META
+
 MAX_ROWS = 500
 
 CSS = """
@@ -431,6 +433,47 @@ def render(ranked, scope):
     for item in ranked["could_not_determine"]:
         out.append("<li>%s</li>" % _e(item))
     out.append("</ul></div>")
+
+    # 9. Appendix — rule incidence
+    #
+    # A rule that never ran is not the same as a rule that ran and found
+    # nothing: the first says the language was absent, the second says the
+    # construct was absent. Both are printed so a zero cannot be read as
+    # coverage. Precision is only shown when the calibration file exists.
+    out.append("<h2>Appendix — rule incidence</h2>")
+    out.append("<p class=\"meta\">Every rule this tool ships. A rule that ran and matched "
+               "nothing reads <code>0 hits</code>; a rule whose language was absent reads "
+               "<code>0 hits (unexercised)</code> and says nothing about the code.</p>")
+    incidence = ranked.get("rule_incidence") or {}
+    calibration = ranked.get("calibration") or {}
+    overall = calibration.get("precision")
+    by_taxonomy = calibration.get("by_taxonomy") or {}
+    out.append("<table><thead><tr><th>Rule</th><th>Hits in this scan</th>"
+               "<th>Precision</th></tr></thead><tbody>")
+    for rule in sorted(META):
+        hits = incidence.get(rule)
+        if hits is None:
+            hits_text = "0 hits (unexercised)"
+        else:
+            hits_text = "%d hit%s" % (hits, "" if hits == 1 else "s")
+        entry = by_taxonomy.get(META[rule][0]) or {}
+        if entry.get("precision") is not None:
+            precision = "%.2f (%s, n=%s)" % (entry["precision"], META[rule][0],
+                                             entry.get("checked", "?"))
+        elif overall is not None:
+            precision = "%.2f (all judged findings, not this rule)" % overall
+        else:
+            precision = "unmeasured"
+        out.append("<tr><td><code>%s</code></td><td>%s</td><td>%s</td></tr>"
+                   % (_e(rule), _e(hits_text), _e(precision)))
+    out.append("</tbody></table>")
+    if not calibration:
+        out.append("<p class=\"meta\">No <code>out/calibration.json</code>: precision is "
+                   "unmeasured, not 100%. Run <code>pareto-triage calibrate</code> on a "
+                   "phase-2 sample to fill this column.</p>")
+    else:
+        out.append("<p class=\"meta\">Calibration judges phase-2 findings by taxonomy, not "
+                   "each rule's matches; the taxonomy row is the closest available number.</p>")
 
     out.append("<p class=\"meta\" style=\"margin-top:32px\">This report measures code, not people. "
                "It ranks risk; it does not diagnose root cause. Every number here is reproducible from "

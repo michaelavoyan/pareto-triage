@@ -1,0 +1,25 @@
+{
+  "express-app": {
+    "cfg-secret-generic": 0,
+    "js-dangerous-html": 0,
+    "js-eval": 1,
+    "js-exec-interp": 0,
+    "js-new-function": 0,
+    "js-secret-aws": 0,
+    "js-secret-pem": 0,
+    "js-secret-stripe": 0,
+    "js-tls-off": 1,
+    "py-secret-aws": 0,
+    "py-secret-pem": 0,
+    "py-secret-stripe": 0
+  },
+  "jvm-rules": {
+    "jvm-exec-injection": 1,
+    "jvm-object-input-stream": 1,
+    "jvm-sql-injection": 1,
+    "jvm-weak-hash": 2,
+    "py-secret-aws": 0,
+    "py-secret-pem": 0,
+    "py-secret-stripe": 0
+  }
+}
