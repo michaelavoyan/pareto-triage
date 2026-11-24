@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.1
+
+- F2: a top-five card now shows the evidence line with up to three lines either
+  side, in a small monospace block with the cited line marked. The block is
+  read from the source file when `report` runs and capped at seven lines, so
+  the HTML stays one offline file. A missing file, an unreadable file, or a
+  line out of range falls back silently to the quoted line alone: a report
+  rendered away from its tree still quotes what the finding claimed, and
+  nothing is invented to fill the block. Every row is escaped and redacted, so
+  a secret on a neighbouring line is masked exactly like one on the cited line.
+- CI: Python 3.15 joins the test matrix on `ubuntu-latest`, next to 3.9
+  (`ubuntu-22.04`) and 3.12 (`ubuntu-latest`). `pipeline.yml` and `release.yml`
+  already ran 3.15; this is the first time the whole suite does.
+- README corrected: it now states what the detector tier measures. 26 rules,
+  and on the two real corpora tested only the security rules produced
+  anything — Signal-Android (828k lines) 1 finding, JobPilot (10k lines) 0
+  after the secret rule was limited to committed files. The appendix's
+  `0 hits (unexercised)` and `unmeasured` labels are named there so a zero is
+  not read as coverage.
+
 ## 0.6.0
 
 - Added `context --coverage F`: keeps `max(1, ceil(F × judgeable))` sites,
