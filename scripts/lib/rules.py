@@ -347,6 +347,7 @@ JVM_SQL_CALL = re.compile(r"\b(?:executeQuery|executeUpdate|execute)\s*\(")
 JVM_SQL_VERB = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE\s+INTO)\b", re.I)
 JVM_WEAK_HASH = re.compile(r"\bMessageDigest\s*\.\s*getInstance\s*\(\s*\"(?:MD5|SHA-1)\"")
 JVM_OBJECT_INPUT = re.compile(r"\bnew\s+ObjectInputStream\s*\(")
+
 # A '+' operand that is a literal or a compile-time constant. UPPER_SNAKE_CASE
 # names (FILTER_SPEC, BuildConfig.ENDPOINT) are constants; a lowercase name, a
 # field, a parameter, an array element, or a call is a value that can vary.
@@ -498,7 +499,6 @@ def _jvm_defects(text):
             found.append(("jvm-weak-hash", number, stripped[:300]))
         if JVM_OBJECT_INPUT.search(line_blanked):
             found.append(("jvm-object-input-stream", number, stripped[:300]))
-
     return found
 
 
