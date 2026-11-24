@@ -93,7 +93,9 @@ class JudgeableSelectionTests(unittest.TestCase):
             self.good + self.short, {}, limit=2, per_file=10, order="ranked",
             judgeable=True)
         self.assertEqual([s["function"] for s in selected], ["good0", "good1"])
-        self.assertEqual(plan, {"judgeable": 3, "filtered": 3, "fallback": 0})
+        self.assertEqual(plan["judgeable"], 3)
+        self.assertEqual(plan["filtered"], 3)
+        self.assertEqual(plan["fallback"], 0)
         self.assertEqual(len(population), 6)
         self.assertEqual([s["function"] for s in population[:2]],
                          ["good0", "good1"])
@@ -150,7 +152,8 @@ class JudgeableCliTests(unittest.TestCase):
             self.assertIn("1 filtered from the sample", result.stdout)
 
             payload = json.loads((out / "sample.json").read_text())
-            self.assertEqual(payload["judgeable"],
+            self.assertEqual(payload["judgeable"], 1)
+            self.assertEqual(payload["judgeable_detail"],
                              {"candidates": 1, "filtered": 1, "fallback": 0})
 
             run(["context", repo, "--out", out, "--all", "--sample-order", "ranked"])
@@ -158,8 +161,8 @@ class JudgeableCliTests(unittest.TestCase):
                           (out / "candidates.jsonl").read_text().splitlines() if line]
             self.assertEqual([record["function"] for record in population],
                              ["route", "helper"])
-            self.assertEqual(json.loads((out / "sample.json").read_text())["judgeable"],
-                             {"candidates": 1, "filtered": 1, "fallback": 1})
+            detail = json.loads((out / "sample.json").read_text())["judgeable_detail"]
+            self.assertEqual(detail, {"candidates": 1, "filtered": 1, "fallback": 1})
 
     def test_a_repo_with_fewer_judgeable_sites_than_the_limit_says_so(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -175,7 +178,9 @@ class JudgeableCliTests(unittest.TestCase):
                              ["handler", "helper"])
             self.assertIn("only 0 judgeable site(s) for a limit of 5", result.stdout)
             self.assertIn("ranked fallback", result.stdout)
-            self.assertEqual(json.loads((out / "sample.json").read_text())["judgeable"],
+            payload = json.loads((out / "sample.json").read_text())
+            self.assertEqual(payload["judgeable"], 0)
+            self.assertEqual(payload["judgeable_detail"],
                              {"candidates": 0, "filtered": 2, "fallback": 2})
 
 

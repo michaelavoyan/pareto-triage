@@ -456,6 +456,20 @@ def cmd_context(positional, flags):
         print("--limit must be >= 1 and --max-lines >= 5", file=sys.stderr)
         return 2
 
+    coverage = None
+    if "coverage" in flags:
+        if "limit" in flags:
+            print("--coverage and --limit are mutually exclusive", file=sys.stderr)
+            return 2
+        try:
+            coverage = float(flags["coverage"])
+        except (TypeError, ValueError):
+            print("--coverage must be a number between 0 and 1", file=sys.stderr)
+            return 2
+        if not 0.0 < coverage <= 1.0:
+            print("--coverage must be a number between 0 and 1", file=sys.stderr)
+            return 2
+
     order = str(flags.get("sample-order", DEFAULT_SAMPLE_ORDER))
     if order not in SAMPLE_ORDERS:
         print("--sample-order must be one of: %s" % ", ".join(SAMPLE_ORDERS), file=sys.stderr)
@@ -512,7 +526,8 @@ def cmd_context(positional, flags):
 
     sites, summary = extract_sites(files, reach, max_sites=max_sites, max_source_lines=max_source,
                                    include_enclosing=bool(flags.get("include-enclosing")),
-                                   all_sites=write_population, order=order, seed=seed)
+                                   all_sites=write_population, order=order, seed=seed,
+                                   coverage=coverage)
 
     for site in sites:
         path = paths.get(site["file"]) or [site["file"]]
@@ -562,16 +577,20 @@ def cmd_context(positional, flags):
         _write_jsonl(candidates_path, records)
 
     sample_payload = {
-        "mode": order,
+        "mode": "coverage" if coverage is not None else order,
+        "order": order,
+        **({"fraction": coverage} if coverage is not None else {}),
         "seed": seed,
         "population": summary["population"],
         "kept": summary["emitted"],
         "per_file": summary["per_file"],
-        "judgeable": {
+        "judgeable": summary["judgeable_candidates"],
+        "judgeable_detail": {
             "candidates": summary["judgeable_candidates"],
             "filtered": summary["judgeable_filtered"],
             "fallback": summary["judgeable_fallback"],
         },
+        "strata": summary["strata"],
     }
     sample_path = out_dir / "sample.json"
     sample_path.write_text(json.dumps(sample_payload, indent=2) + "\n", encoding="utf-8")
@@ -586,7 +605,8 @@ def cmd_context(positional, flags):
           % (num(len(files)), num(reachable_files), num(summary["unreachable_source_files"])))
     print("sites      %s of %s candidates%s; %s trivial accessor(s) skipped"
           % (num(summary["emitted"]), num(summary["candidates"]),
-             " (limit %s hit)" % num(summary["limit"]) if summary["limit_hit"] else "",
+             " (limit %s hit)" % num(summary["limit"])
+             if summary["limit_hit"] and coverage is None else "",
              num(summary["trivial_excluded"])))
     if candidates_path is not None:
         print("population %s candidate sites written; first %s match context.jsonl"
@@ -600,9 +620,17 @@ def cmd_context(positional, flags):
         print("warning    %s: cannot parse (%s)" % (error["file"], error["reason"]))
     if len(summary["parse_errors"]) > 10:
         print("warning    … %d more unparseable files" % (len(summary["parse_errors"]) - 10))
-    print("sample     %s, seed %d: kept %s of %s candidates, max %d per file"
-          % (order, seed, num(summary["emitted"]), num(summary["population"]),
-             summary["per_file"]))
+    if coverage is not None:
+        print("sample     coverage %.3f, seed %d: kept %s of %s candidates"
+              % (coverage, seed, num(summary["emitted"]), num(summary["population"])))
+    else:
+        print("sample     %s, seed %d: kept %s of %s candidates, max %d per file"
+              % (order, seed, num(summary["emitted"]), num(summary["population"]),
+                 summary["per_file"]))
+    if summary["strata"]:
+        print("strata     %s"
+              % ", ".join("reach %s: %s" % (band, num(count))
+                          for band, count in summary["strata"].items()))
     print("judgeable  %s of %s candidates (%d%%) have a failure surface and 4+ non-blank lines; "
           "%s filtered from the sample"
           % (num(summary["judgeable_candidates"]), num(summary["candidates"]),
@@ -621,7 +649,7 @@ def cmd_context(positional, flags):
     if order == "ranked":
         print("selection  reach → inbound edges → body size, max %d per file"
               % summary["per_file"])
-    if summary["limit_hit"]:
+    if summary["limit_hit"] and coverage is None:
         print("warning    site cap reached; %s candidates were not included"
               % num(summary["candidates"] - summary["emitted"]))
     print("")
@@ -1568,7 +1596,8 @@ usage: pareto-triage <command> [args]
 
   gate <repo> [--min-loc N] [--out DIR]   phase 0 — scope, refusal, entrypoints
   context <repo> [--limit N] [--max-depth N]  phase 0b — reachable candidate sites
-          [--sample-order random|ranked] [--seed N]  how the cap is filled (default random)
+          [--coverage F]  sample max(1, ceil(F x judgeable)) sites instead of --limit
+          [--sample-order random|ranked] [--seed N]  how each reach band is filled (default random)
           [--all] [--save-candidates PATH]  also write the whole candidate population
   sampling <repo> [--limit N] [--seed N]  compare selected sites against a random sample
   detect <repo> [--max-depth N]           phase 1 — built-in defect rules

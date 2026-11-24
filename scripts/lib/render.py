@@ -406,12 +406,20 @@ def render(ranked, scope):
                       coverage.get("sites_unjudged") or 0))
     sample = ranked.get("sample") or {}
     if sample.get("mode"):
+        mode = sample.get("mode")
+        if mode == "coverage" and sample.get("fraction") is not None:
+            mode = "coverage %s" % sample["fraction"]
+        strata = sample.get("strata") or {}
+        strata_note = ""
+        if strata:
+            strata_note = " Reach bands: %s." % ", ".join(
+                "reach %s: %s" % (band, count) for band, count in strata.items())
         out.append("<div class=\"note\"><p>Candidate sites were sampled: <strong>%s</strong>, "
-                   "seed %s — %s of %s candidates kept, at most %s per file. "
+                   "seed %s — %s of %s candidates kept, at most %s per file.%s "
                    "Rule findings cover every scanned file; this is a sample only for judgment.</p></div>"
-                   % (_e(sample.get("mode")), _e(str(sample.get("seed", 0))),
+                   % (_e(mode), _e(str(sample.get("seed", 0))),
                       _e(str(sample.get("kept", 0))), _e(str(sample.get("population", 0))),
-                      _e(str(sample.get("per_file", 0)))))
+                      _e(str(sample.get("per_file", 0))), _e(strata_note)))
     unproven = ranked.get("unproven") or []
     if unproven:
         out.append("<h3>Unproven — supplied, could not be scored</h3>")

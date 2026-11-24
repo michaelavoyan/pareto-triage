@@ -30,7 +30,13 @@ CLEAN = [SAFE, PREFIX + "ConstantExec.java", PREFIX + "KeyedCallback.java",
          # Signal-Android audit. The rule is withdrawn; these files prove the
          # masking helper does not read their literal bodies as empty.
          KOTLIN + "NameCollisionTables.kt", KOTLIN + "LogSectionSystemInfo.kt",
-         KOTLIN + "RingRtcDynamicConfiguration.kt", KOTLIN + "WebView.kt"]
+         KOTLIN + "RingRtcDynamicConfiguration.kt", KOTLIN + "WebView.kt",
+         # The same two writes inside a transaction, and a method with one
+         # write: both must stay quiet for the transaction rule.
+         PREFIX + "TransactionalWrite.java",
+         # The withdrawn jvm-write-without-transaction fixtures: two writes
+         # with no transaction, and the same pair inside one.
+         PREFIX + "NonAtomicWrite.java"]
 
 sys.path.insert(0, str(SCRIPTS))
 from lib.rules import _blank_noncode, detect_defects  # noqa: E402

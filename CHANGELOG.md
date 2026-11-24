@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.6.0
+
+- Added `context --coverage F`: keeps `max(1, ceil(F × judgeable))` sites,
+  seeded, instead of a fixed `--limit`, and refuses to run with both. The
+  per-file cap is lifted in coverage mode, because a fraction is a share of the
+  sites that exist; capping would make `--coverage 1` drop sites. `sample.json`
+  records `{mode: "coverage", fraction, seed, population, kept, per_file,
+  judgeable, judgeable_detail, strata}` and a limit run keeps the old fields
+  with `mode` set to the sampling order.
+- Both sampling modes now apportion seats by reach: every band present in the
+  judgeable population gets a proportional share, and a band that exists gets
+  at least one seat when the seat count allows. `strata` in `sample.json`
+  records the seats each band actually received.
+- Added `references/entrypoints.md` sections for the `sample.json` shape and
+  the sample-size formula `n = 1.96² · p(1 − p) / 0.05²`. The default stays 400
+  until `calibrate` supplies `p`; the formula is documented, not applied.
+- Withdrew the `js-unvalidated-input` candidate after measurement. It fired on
+  a `req.body.X`/`req.query.X`/`req.params.X` value reaching a DB or shell call
+  in a route file, with validator and parsing silence. On JobPilot (`4cf86d0`,
+  113 non-test files) it produced 0 findings: the server uses `createServer`
+  with pathname cases and reads `body.X` after `JSON.parse`, not Express
+  routes. On Signal-Android (`2dd5703`, 8,906 non-test files) it produced 0
+  findings: none of the five non-test JS files is a route. Zero hits on both
+  corpora means no hit to classify; 0/0 is not a pass. The firing and silent
+  shapes stay as fixtures, asserted to produce no finding.
+- Withdrew the `jvm-write-without-transaction` candidate after measurement. It
+  fired on methods with two database writes and no transaction call in the
+  body. On Signal-Android it produced 230 findings; every one was read: 5
+  TRUE, 39 DELIBERATE, 186 FALSE — 2.17% true positives, and still only 19.1%
+  if every DELIBERATE finding is counted as acceptable. The false positives are
+  transactions the method does not contain: 120 framework `onCreate`/
+  `onUpgrade`/migration methods, 45 `withinTransaction` calls, 7 caller
+  `ensureInTransaction()` paths, 12 mutually exclusive branches, and 2 method
+  declarations named `execSQL`. JobPilot has no JVM source, so incidence there
+  was zero. The rule count returns to 26; the per-hit audit is in
+  `references/defect-rules.md`.
+
 ## 0.5.0
 
 - Withdrew the `js-sql-template` candidate before release. It was correct by

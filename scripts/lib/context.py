@@ -19,6 +19,7 @@ still available, but a reader must ask for it.
 """
 
 import ast
+import math
 import random
 import re
 
@@ -43,6 +44,7 @@ MAX_SITES_PER_FILE = 20
 SAMPLE_ORDERS = ("random", "ranked")
 DEFAULT_SAMPLE_ORDER = "random"
 DEFAULT_SEED = 0
+COVERAGE_FLOOR = 1
 ACCESSOR_RE = re.compile(r"^(get|set|is|has)[A-Z]")
 MAX_SOURCE_LINES = 300
 
@@ -1107,6 +1109,63 @@ def _permutation(size, seed):
     return pool
 
 
+def coverage_size(judgeable, fraction):
+    """Sites a coverage fraction asks for: `max(floor, ceil(fraction * n))`.
+
+    The floor is one: a non-zero fraction never draws an empty sample, and a
+    repo with no judgeable site draws nothing at all.
+    """
+    if judgeable <= 0:
+        return 0
+    return max(COVERAGE_FLOOR, math.ceil(fraction * judgeable))
+
+
+def _allocate_strata(counts, n):
+    """Proportional allocation over reach bands, with one seat per band.
+
+    `counts` maps a reach band to its judgeable population. Every band present
+    gets a seat when `n` allows it, so the sample cannot lose the rarest reach
+    level to rounding. The remainder goes by largest fraction, ties to the
+    higher band. When `n` is smaller than the number of bands, the bands with
+    the largest populations take the seats; representing all of them is then
+    impossible and the allocation does not pretend otherwise.
+    """
+    bands = sorted(counts)
+    total = sum(counts.values())
+    if n >= total:
+        return dict(counts)
+    if n <= 0:
+        return {band: 0 for band in bands}
+    if n <= len(bands):
+        winners = set(sorted(bands, key=lambda band: (-counts[band], -band))[:n])
+        return {band: (1 if band in winners else 0) for band in bands}
+
+    quotas = {band: n * counts[band] / total for band in bands}
+    allocation = {band: int(quotas[band]) for band in bands}
+    for band in bands:
+        if allocation[band]:
+            continue
+        donor = max((other for other in bands if allocation[other] > 1),
+                    key=lambda other: (allocation[other], other))
+        allocation[donor] -= 1
+        allocation[band] = 1
+
+    remaining = n - sum(allocation.values())
+    order = sorted(bands, key=lambda band: (-(quotas[band] - int(quotas[band])), -band))
+    while remaining > 0:
+        advanced = False
+        for band in order:
+            if remaining <= 0:
+                break
+            if allocation[band] < counts[band]:
+                allocation[band] += 1
+                remaining -= 1
+                advanced = True
+        if not advanced:
+            break
+    return allocation
+
+
 def _fill_selection(indexes, ranked, limit, per_file, selected=None, counts=None):
     """Walk `indexes` in order, adding sites while the per-file cap and limit hold.
 
@@ -1128,35 +1187,34 @@ def _fill_selection(indexes, ranked, limit, per_file, selected=None, counts=None
 
 def select_sites(candidates, inbound, limit=MAX_SITES_DEFAULT,
                  per_file=MAX_SITES_PER_FILE, order=DEFAULT_SAMPLE_ORDER,
-                 seed=DEFAULT_SEED, judgeable=False):
+                 seed=DEFAULT_SEED, judgeable=False, coverage=None):
     """Pick the sites worth judging. See `select_sites_with_remainder`."""
     selected, _, _ = select_sites_with_remainder(
         candidates, inbound, limit=limit, per_file=per_file, order=order,
-        seed=seed, judgeable=judgeable)
+        seed=seed, judgeable=judgeable, coverage=coverage)
     return selected
 
 
 def select_sites_with_remainder(candidates, inbound, limit=MAX_SITES_DEFAULT,
                                 per_file=MAX_SITES_PER_FILE,
                                 order=DEFAULT_SAMPLE_ORDER, seed=DEFAULT_SEED,
-                                judgeable=False):
+                                judgeable=False, coverage=None):
     """Return (selected, population, plan) where the population starts with `selected`.
 
-    `random` shuffles the ranked candidate list with `seed`, then applies the
-    per-file cap and the limit. `ranked` walks the old order. Either way the
-    walk that fills the cap is a single pass, so the per-file cap holds.
+    `random` shuffles the ranked candidate list with `seed`; `ranked` walks the
+    old order. Either way the per-file cap holds and the sample is drawn per
+    reach band, proportionally: a repo with reach 2 and 5 sites keeps both
+    bands, and a large reach-2 population does not crowd reach 5 out.
 
     With `judgeable`, only sites `is_judgeable` accepts fill the cap. The filter
     is applied here, in the sampling step, and never to the population: the
     remainder still lists every candidate, filtered or not, because
     `candidates.jsonl` is the population, not the sample. When fewer judgeable
-    sites exist than the limit, the cap is filled from the non-judgeable
+    sites exist than the cap, the rest is filled from the non-judgeable
     remainder in ranked order and `plan["fallback"]` says how many.
 
-    The order is the contract for `out/candidates.jsonl`: the first
-    `len(selected)` records are exactly what `context.jsonl` would emit, and
-    every remaining candidate follows in the ranked order. A random-sample
-    comparison can then take a prefix without re-deriving the per-file cap.
+    With `coverage`, the cap is `max(1, ceil(coverage * judgeable))` instead of
+    `limit`; the two are mutually exclusive at the CLI.
     """
     ranked = _ordered_sites(candidates, inbound)
     if order == "random":
@@ -1177,24 +1235,51 @@ def select_sites_with_remainder(candidates, inbound, limit=MAX_SITES_DEFAULT,
         allowed = set(eligible)
         ordered_indexes = [index for index in permutation if index in allowed]
 
-    selected_indexes, counts = _fill_selection(ordered_indexes, ranked, limit, per_file)
+    target = coverage_size(len(eligible), coverage) if coverage is not None else limit
+    band_counts = {}
+    for index in eligible:
+        band = ranked[index]["reach"]
+        band_counts[band] = band_counts.get(band, 0) + 1
+    allocation = _allocate_strata(band_counts, target)
+
+    selected_indexes, counts = [], {}
+    for band in sorted(allocation, reverse=True):
+        seats = allocation[band]
+        if seats <= 0:
+            continue
+        stratum = [index for index in ordered_indexes if ranked[index]["reach"] == band]
+        selected_indexes, counts = _fill_selection(
+            stratum, ranked, len(selected_indexes) + seats, per_file,
+            selected=selected_indexes, counts=counts)
+
+    if len(selected_indexes) < target:
+        taken = set(selected_indexes)
+        rest = [index for index in ordered_indexes if index not in taken]
+        selected_indexes, counts = _fill_selection(
+            rest, ranked, target, per_file, selected=selected_indexes, counts=counts)
 
     fallback = 0
-    if judgeable and len(selected_indexes) < limit:
+    if judgeable and len(selected_indexes) < target:
         eligible_set = set(eligible)
         remainder = (index for index in range(len(ranked)) if index not in eligible_set)
         before = len(selected_indexes)
         selected_indexes, counts = _fill_selection(
-            remainder, ranked, limit, per_file, selected=selected_indexes, counts=counts)
+            remainder, ranked, target, per_file, selected=selected_indexes, counts=counts)
         fallback = len(selected_indexes) - before
 
     selected = [ranked[index] for index in selected_indexes]
     taken = set(selected_indexes)
     rest = [site for index, site in enumerate(ranked) if index not in taken]
+    strata = {}
+    for index in selected_indexes:
+        band = ranked[index]["reach"]
+        strata[str(band)] = strata.get(str(band), 0) + 1
     plan = {
         "judgeable": len(eligible),
         "filtered": len(ranked) - len(eligible),
         "fallback": fallback,
+        "target": target,
+        "strata": dict(sorted(strata.items(), key=lambda item: int(item[0]), reverse=True)),
     }
     return selected, selected + rest, plan
 
@@ -1244,11 +1329,13 @@ def _collapse_nested(candidates):
 
 def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines=MAX_SOURCE_LINES,
                   min_reach=2, include_enclosing=False, all_sites=False,
-                  order=DEFAULT_SAMPLE_ORDER, seed=DEFAULT_SEED):
+                  order=DEFAULT_SAMPLE_ORDER, seed=DEFAULT_SEED, coverage=None):
     """Return (sites, summary). Sites are ordered deterministically.
 
     With `all_sites`, the returned list is the whole population with the
-    selected sites first; otherwise it is only the selected sites.
+    selected sites first; otherwise it is only the selected sites. With
+    `coverage`, the cap is derived from the judgeable population instead of
+    `max_sites`.
     """
     candidates = []
     parse_errors = []
@@ -1315,10 +1402,17 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
     from .imports import inbound_counts
     inbound = inbound_counts(files)
     total = len(judged)
-    per_file = max(3, min(MAX_SITES_PER_FILE, max_sites // 5))
+    judgeable_total = sum(1 for site in judged if is_judgeable(site))
+    cap = (coverage_size(judgeable_total, coverage)
+           if coverage is not None else max_sites)
+    # A coverage fraction is a share of the judgeable sites, so the per-file
+    # cap — a guard against one huge class owning a fixed-size sample — is
+    # lifted: capping would make "coverage 1.0" quietly drop sites.
+    per_file = (cap if coverage is not None
+                else max(3, min(MAX_SITES_PER_FILE, max(cap, 1) // 5)))
     selected, population, plan = select_sites_with_remainder(
-        judged, inbound, limit=max_sites, per_file=per_file, order=order,
-        seed=seed, judgeable=True)
+        judged, inbound, limit=cap, per_file=per_file, order=order,
+        seed=seed, judgeable=True, coverage=coverage)
     chosen = population if all_sites else selected
 
     sites = []
@@ -1332,9 +1426,12 @@ def extract_sites(files, reach_of, max_sites=MAX_SITES_DEFAULT, max_source_lines
         "emitted": len(selected),
         "population": len(population),
         "all_sites": all_sites,
-        "limit": max_sites,
+        "limit": cap,
+        "cap": cap,
+        "coverage": coverage,
+        "strata": plan["strata"],
         "per_file": per_file,
-        "limit_hit": total > max_sites,
+        "limit_hit": total > cap,
         "order": order,
         "seed": seed,
         "parse_errors": parse_errors,

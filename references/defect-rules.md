@@ -187,3 +187,44 @@ Fires on a template literal with `${` passed as the first argument to `query`, `
 On JobPilot at `37aceae` it produced no findings across 111 non-test files, and on Signal-Android at `2dd5703` no findings across 8,906 non-test Java/Kotlin files. JobPilot's SQL is all `prepare`/`exec` with static text or `?` plus values, and Signal-Android has no TypeScript/JavaScript application SQL.
 
 Withdrawn: zero findings means zero findings to inspect, so the rule cannot show 70% true positives; 0/0 is not a pass. This is the same standard that withdrew `jvm-trust-all` and `jvm-hostname-verifier-true`. A rule that fires on no line of either measured corpus claims coverage the corpus never exercised, and shipping it would hide that gap behind a rule count. The silent shapes stay as `fixtures/express-app/src/sql.ts`, asserted by `scripts/test/test_sql_shapes.py` to produce no finding from any rule. Re-propose only with a corpus that contains SQL assembled from a JS template literal.
+
+### `js-unvalidated-input` — rejected, 0 findings on both corpora, precision unmeasured
+
+Fires when a route handler reads `req.body.X`, `req.query.X`, or `req.params.X` and passes that value — directly or through one assignment — to a DB call (`query`, `execute`, `prepare`, `run`) or, in a file importing `child_process`, a shell call. A validator import or call before the sink (`zod`, `joi`, `yup`, `express-validator`, `celebrate`) silences the file, and `Number(...)`, `parseInt(...)`, or `JSON.parse(...)` on the same statement is the parse for that scalar. Three firing shapes and three silent shapes are fixtures.
+
+On JobPilot at `4cf86d0` it produced no findings across 113 non-test files. JobPilot's HTTP layer is `createServer` with `pathname === …` cases rather than Express route registration, and its body values arrive as `body.X` from `readJsonBody`, which calls `JSON.parse`; neither the route-registration requirement nor the parse rule can fire. On Signal-Android at `2dd5703` it produced no findings across 8,906 non-test files; the five non-test JS files are a debug-log viewer and spinner assets, none a route.
+
+Withdrawn: 0 hits on both corpora means no hit to classify, and 0/0 is not a pass under the 0.70 gate — the same standard that withdrew `js-sql-template`, `jvm-trust-all`, and `jvm-hostname-verifier-true`. The fixtures stay: `fixtures/express-app/src/unvalidated.ts` and `validated.ts`, asserted by `scripts/test/test_js_unvalidated.py` to produce no finding. Re-propose only with a corpus that uses `req.body.X`/`req.query.X`/`req.params.X` in registered routes.
+
+### `jvm-write-without-transaction` — rejected, 5/230 precision (0.02)
+
+Fires once on a method body containing two or more database writes (`insert`, `update`, `delete`, `replace`, `upsert`, `execSQL`) with no `beginTransaction`, `inTransaction`, `withTransaction`, or `endTransaction` in that body. A write counts only when its receiver names a database (`db`, `database`, `writableDatabase`, `readableDatabase`, a `…Database`/`…Dao` receiver, or a content resolver), so `Cipher.update` and `MessageDigest.update` are excluded.
+
+On JobPilot it produced 0 findings: the repo has no Java or Kotlin source. On Signal-Android at `2dd5703` it produced 230 findings across 8,906 non-test files. Every finding was read and classified:
+
+| Class | Hits | What it was |
+|---|---|---|
+| TRUE | 5 | dependent data writes, no transaction in the method or a visible caller |
+| DELIBERATE | 39 | independent cleanup, per-row recovery, bulk import, or a job that retries |
+| FALSE | 186 | see the breakdown below |
+| **Total** | **230** | 5/230 = **2.17%** true positives |
+
+The five TRUE findings, which are the rule's only defensible hits:
+
+| Where | Method |
+|---|---|
+| `app/src/main/java/org/thoughtcrime/securesms/database/CallTable.kt:965` | `updateGroupCallState` |
+| `app/src/main/java/org/thoughtcrime/securesms/database/MessageTable.kt:3259` | `insertMessageInbox` (edit path) |
+| `app/src/main/java/org/thoughtcrime/securesms/database/MessageTable.kt:3746` | `insertMessageOutbox` (edit path) |
+| `app/src/main/java/org/thoughtcrime/securesms/database/RecipientTable.kt:2685` | `setPni` |
+| `app/src/main/java/org/thoughtcrime/securesms/database/RecipientTable.kt:2976` | `writePnpChangeSetToDisk` |
+
+The 186 false positives, by cause:
+
+- **120** are `onCreate`, `onUpgrade`, `migrate`, or schema-creation methods. SQLiteOpenHelper runs `onCreate`/`onUpgrade` inside a transaction, and the migration helpers are called from there; the transaction is real and outside the method the rule reads.
+- **45** call `withinTransaction`, Signal's extension. The rule's four names do not include it, so it read a transaction as absent.
+- **12** are mutually exclusive branches (an `if`/`else`, a `when`, or a `return` before the second write). Only one write executes; the rule counted both.
+- **7** are remap methods whose callers call `ensureInTransaction()` — the merge path opens the transaction one frame up.
+- **2** are a method declaration named `execSQL`, where the declaration and its one call were counted as two writes.
+
+Even counting all 39 DELIBERATE findings as acceptable, (5 + 39) / 230 = 19.1%, still far below 0.70. Withdrawn: a method-local check cannot see the transaction its caller, the framework, or an extension opens, and it cannot tell whether two writes are one logical operation. That is an interprocedural question, not a line or body question. The fixture pair stays: `NonAtomicWrite.java` (two writes, no transaction) and `TransactionalWrite.java` (the same writes inside one), asserted silent by `scripts/test/test_jvm_write_transaction.py`. Re-propose only with interprocedural transaction resolution.
