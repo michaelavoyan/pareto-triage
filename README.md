@@ -58,7 +58,7 @@ The report also says what carries the verdict: an attribution sentence splits th
 
 ## How it decides
 
-26 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, weak hashing, mutable defaults.
+27 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation or template, disabled TLS, committed keys, bare `except`, weak hashing, mutable defaults.
 
 The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
 

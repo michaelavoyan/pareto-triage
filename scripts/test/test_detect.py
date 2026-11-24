@@ -43,7 +43,7 @@ class DetectTests(unittest.TestCase):
         tmp, out, findings = gate_and_detect("express-app", 10)
         self.addCleanup(tmp.cleanup)
         rules = {f["rule"] for f in findings}
-        self.assertEqual(rules, {"js-eval", "js-tls-off"}, rules)
+        self.assertEqual(rules, {"js-eval", "js-tls-off", "js-sql-template"}, rules)
 
     def test_evidence_is_verbatim(self):
         tmp, out, findings = gate_and_detect("python-app", 5)

@@ -8,7 +8,7 @@ Swift and Objective-C are not in this file because there are no rules for them. 
 
 ## Rules
 
-The tables below list all 26 active rules.
+The tables below list all 27 active rules.
 
 ### Python (AST-based, `ast.parse`)
 
@@ -32,6 +32,7 @@ The tables below list all 26 active rules.
 | `js-eval` | code-injection | 5 | 2 | `eval(` |
 | `js-new-function` | code-injection | 5 | 2 | `new Function(` |
 | `js-exec-interp` | command-injection | 5 | 2 | `exec`/`execSync` on a template with `${`, in a file that imports `child_process` |
+| `js-sql-template` | sql-injection | 5 | 2 | a template with `${` as the first argument of `query`/`execute`/`exec`/`raw`, on a database receiver or in a file that imports a SQL driver, with no values argument |
 | `js-tls-off` | tls-verification-disabled | 5 | 3 | `rejectUnauthorized: false` |
 | `js-secret-aws` | hardcoded-secret | 5 | 3 | `AKIA…` key |
 | `js-secret-pem` | hardcoded-secret | 5 | 3 | `BEGIN … PRIVATE KEY` |
@@ -39,6 +40,13 @@ The tables below list all 26 active rules.
 | `js-dangerous-html` | xss | 5 | 1 | `dangerouslySetInnerHTML` |
 
 `exec(` is not a shell call by itself: `db.exec(...)` on a SQLite handle, a query runner, and a process pool all use the name. `js-exec-interp` requires the file to import `child_process` (`import … from 'child_process'`, `require('child_process')`, or the `node:` form) and the call to be `exec` or `execSync`. `execFile` and `execFileSync` take a program and an argument vector and reach a shell only when the same line passes `shell: true`, so only that shape fires; an interpolated argument without the option is silent. `spawn` and `spawnSync` are not matched for the same reason: without `shell: true` an interpolated argument is one element of an argument vector, not a shell string. The cost is a false negative for `spawn(..., { shell: true })` and for `execFile` with the option on a later line. Both are recorded here rather than guessed at from a line that does not show the shell.
+
+`js-sql-template` has two scopes, because a call name alone is not a database:
+
+- **The receiver is a database.** The receiver identifier contains `db`, `database`, `pool`, `client`, `conn`, `statement`, or `sql`, or the file imports a SQL driver (`node:sqlite`, `sqlite3`, `better-sqlite3`, `@libsql/client`, `pg`, `pg-pool`, `postgres`, `mysql`, `mysql2`, `knex`). A bare `query(` and `api.query(...)` in a file with no driver import are silent.
+- **The values are not passed separately.** A second argument is read as the placeholder values (`query(sql, [ ... ])`), so the call is silent. A second argument that begins a callback (`function`, `async`, `(`, `=>`) is not values and does not silence it. Placeholder text with a values argument (`query("… ?", [id])`) has no template interpolation and never matches.
+
+The import scope is file-level, so one `import knex from 'knex'` makes every `client.query`-shaped template in that file fire, including a GraphQL client that is not SQL. That is the accepted cost of the OR scope; a receiver whitelist alone would miss `knex.raw`. The rule also keeps the line-local limit of the other JS rules: a call written entirely inside a trailing comment is not masked, and a template whose closing backtick is on a later line is attributed to the line where the call starts. On the two measured corpora (JobPilot, Signal-Android) it produced zero findings, so its real-world precision is **unmeasured**; the fixtures below are the only evidence that it fires and stays quiet where intended.
 
 ### Java / Kotlin (regex, comment lines skipped)
 
@@ -83,6 +91,18 @@ These are visible in the report's "could not determine" section via file counts.
 
 A rule without a negative fixture is a guess.
 
+## Rule-count guard
+
+`scripts/check_rule_counts.py` runs `gate` and `detect` on `fixtures/jvm-rules`
+and `fixtures/express-app`, reads `rule_incidence` from each `scope.json`, and
+compares it with `scripts/test/golden/rule-incidence.json`. A rule that stops
+firing, or that stops running because a language branch was dropped, fails CI.
+The guard is dependency-free and runs the real CLI, so it tests the shipped
+pipeline rather than a helper. After an intended count change, run
+`python3 scripts/check_rule_counts.py --write` and explain the new counts in
+the commit. A golden update with no explanation is how a silent zero gets
+merged.
+
 ## Secrets outside source files
 
 Secrets are matched in `.env`, YAML, JSON, Terraform, TOML, INI, `.properties`, and `.conf` as well as source, because that is where they usually are. Source means `.py`, JavaScript/TypeScript, and `.java`/`.kt`/`.kts`, which reuse the same three patterns under the same rule ids. Only the secret rules run on the non-source files; code rules are meaningless there.
@@ -113,6 +133,24 @@ A finding's `evidence` is quoted verbatim, which means a found secret is a publi
 ## Considered and rejected
 
 Rules that were implemented, measured, and withdrawn. Recorded so the measurement survives and nobody re-proposes them without new evidence.
+
+### `jvm-sql-template` — rejected, 0/12 precision
+
+A Kotlin string template (`"SELECT … WHERE id = $id"`) passed to `query`, `raw`, `executeQuery`, `executeUpdate`, `execute`, or `exec`, with the existing statement-verb requirement. The candidate was a branch of `jvm-sql-injection`, not a new rule id.
+
+On Signal-Android at `2dd5703` it produced 12 findings across 8,906 non-test Java/Kotlin files. All 12 were `DELIBERATE`: every interpolation was an identifier — a table or column name, or a compile-time constant — which SQL cannot bind with `?`. None carried a value that could be a bound parameter. True positives 0, false negatives none observed, precision 0.00.
+
+| Where | Interpolated |
+|---|---|
+| `app/.../InternalSettingsFragment.kt:1412` | `${OneTimePreKeyTable.TABLE_NAME}` |
+| `app/.../ContactIndexDatabase.kt:303` | `${ROW_COLUMNS…}`, `$TABLE_NAME`, `$ID` (values are `?` + `arrayOf`) |
+| `app/.../AttachmentTable.kt:4172`, `:4200` | `$DATA_HASH_END`, `$REMOTE_KEY`, `$TABLE_NAME`, `$QUOTE`, … |
+| `app/.../V172_GroupMembershipMigration.kt:38` | `${index * 500}` (internal loop counter) |
+| `core/.../SQLiteDatabaseExtensions.kt:64`, `:610`, `:623` | `$table`, `$tableName` (callers pass constants) |
+| `core/.../SqlUtil.kt:78`, `:83`, `:135` | `$table` |
+| `lib/spinner/.../DatabaseUtil.kt:30` | `$table` |
+
+Withdrawn: a Kotlin template is the same syntax for a value and for an identifier, and the line does not say which. The corpus answer was every identifier and no values, so the branch would have spent the defect tier's credibility on code the maintainers wrote correctly. Narrowing it to comparison positions (`= $x`, `IN ($x)`) would have produced zero hits on both corpora: unmeasured, not precise. The firing shape stays in `fixtures/jvm-rules/src/main/kotlin/com/acme/SqlTemplate.kt` and is asserted silent.
 
 ### `jvm-empty-catch` — rejected, 0/60 precision
 

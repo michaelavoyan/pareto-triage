@@ -41,7 +41,7 @@ Phases 0, 0b, 1, 3, 4, and 5 are implemented by the scripts; phase 6 (calibratio
 
 ## What the scan covers
 
-`detect` runs 26 built-in rules that prove a construct exists at a line: eval/exec, `shell=True`, `Runtime.exec`/`ProcessBuilder` with concatenation, unsafe deserialization, SQL string interpolation (Java and Kotlin concatenation included), disabled TLS verification, committed secrets, bare except, mutable defaults, debug mode, MD5/SHA-1, XSS sinks. See `references/defect-rules.md`.
+`detect` runs 27 built-in rules that prove a construct exists at a line: eval/exec, `shell=True`, `Runtime.exec`/`ProcessBuilder` with concatenation, unsafe deserialization, SQL string interpolation (Java and Kotlin concatenation included), disabled TLS verification, committed secrets, bare except, mutable defaults, debug mode, MD5/SHA-1, XSS sinks. See `references/defect-rules.md`.
 
 There are no Swift or Objective-C defect rules. `detect` prints rule coverage per language and names any supported language no rule could read; `rank` puts `no rules were applied to N files of Swift` (or Objective-C) into "Could not determine". Zero findings there means unassessed, not clean.
 
@@ -87,7 +87,7 @@ Report sections, in this fixed order: **Shape** → **Curve** → **Quadrant** �
 ## References
 
 - `references/rubric.md` — scoring scales, formulas, gates, version. Read before scoring anything.
-- `references/defect-rules.md` — the 26 built-in rules, their severity, and the precision contract.
+- `references/defect-rules.md` — the 27 built-in rules, their severity, and the precision contract.
 - `references/taxonomy.md` — the 13 failure modes, with counter-examples.
 - `references/prompts.md` — versioned prompts and the JSONL schema.
 - `references/entrypoints.md` — how reachability is derived, and where it lies.
