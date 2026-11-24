@@ -8,7 +8,7 @@ Swift and Objective-C are not in this file because there are no rules for them. 
 
 ## Rules
 
-The tables below list all 27 active rules.
+The tables below list all 26 active rules.
 
 ### Python (AST-based, `ast.parse`)
 
@@ -32,7 +32,6 @@ The tables below list all 27 active rules.
 | `js-eval` | code-injection | 5 | 2 | `eval(` |
 | `js-new-function` | code-injection | 5 | 2 | `new Function(` |
 | `js-exec-interp` | command-injection | 5 | 2 | `exec`/`execSync` on a template with `${`, in a file that imports `child_process` |
-| `js-sql-template` | sql-injection | 5 | 2 | a template with `${` as the first argument of `query`/`execute`/`exec`/`raw`, on a database receiver or in a file that imports a SQL driver, with no values argument |
 | `js-tls-off` | tls-verification-disabled | 5 | 3 | `rejectUnauthorized: false` |
 | `js-secret-aws` | hardcoded-secret | 5 | 3 | `AKIA…` key |
 | `js-secret-pem` | hardcoded-secret | 5 | 3 | `BEGIN … PRIVATE KEY` |
@@ -40,13 +39,6 @@ The tables below list all 27 active rules.
 | `js-dangerous-html` | xss | 5 | 1 | `dangerouslySetInnerHTML` |
 
 `exec(` is not a shell call by itself: `db.exec(...)` on a SQLite handle, a query runner, and a process pool all use the name. `js-exec-interp` requires the file to import `child_process` (`import … from 'child_process'`, `require('child_process')`, or the `node:` form) and the call to be `exec` or `execSync`. `execFile` and `execFileSync` take a program and an argument vector and reach a shell only when the same line passes `shell: true`, so only that shape fires; an interpolated argument without the option is silent. `spawn` and `spawnSync` are not matched for the same reason: without `shell: true` an interpolated argument is one element of an argument vector, not a shell string. The cost is a false negative for `spawn(..., { shell: true })` and for `execFile` with the option on a later line. Both are recorded here rather than guessed at from a line that does not show the shell.
-
-`js-sql-template` has two scopes, because a call name alone is not a database:
-
-- **The receiver is a database.** The receiver identifier contains `db`, `database`, `pool`, `client`, `conn`, `statement`, or `sql`, or the file imports a SQL driver (`node:sqlite`, `sqlite3`, `better-sqlite3`, `@libsql/client`, `pg`, `pg-pool`, `postgres`, `mysql`, `mysql2`, `knex`). A bare `query(` and `api.query(...)` in a file with no driver import are silent.
-- **The values are not passed separately.** A second argument is read as the placeholder values (`query(sql, [ ... ])`), so the call is silent. A second argument that begins a callback (`function`, `async`, `(`, `=>`) is not values and does not silence it. Placeholder text with a values argument (`query("… ?", [id])`) has no template interpolation and never matches.
-
-The import scope is file-level, so one `import knex from 'knex'` makes every `client.query`-shaped template in that file fire, including a GraphQL client that is not SQL. That is the accepted cost of the OR scope; a receiver whitelist alone would miss `knex.raw`. The rule also keeps the line-local limit of the other JS rules: a call written entirely inside a trailing comment is not masked, and a template whose closing backtick is on a later line is attributed to the line where the call starts. On the two measured corpora (JobPilot, Signal-Android) it produced zero findings, so its real-world precision is **unmeasured**; `fixtures/express-app/src/sql.ts` and `sql-raw.ts` are the only evidence that it fires and stays quiet where intended.
 
 ### Java / Kotlin (regex, comment lines skipped)
 
@@ -187,3 +179,11 @@ Fires when a `HostnameVerifier` implementation's `verify` body is only `return t
 On Signal-Android the rule produced no findings across the same 8,906 files. The one `HostnameVerifier` use in app code, `ConscryptSignal.wrapHostnameVerifier`, delegates to `verifier.verify(hostname, session)`. No implementation, anonymous class, or lambda returns an unconditional `true`, in tests included. One Java implementation and one Kotlin lambda fired in the fixture, and delegating and comparing counterparts stayed quiet.
 
 Withdrawn: same arithmetic as `jvm-trust-all`. With no instance to inspect there is no true-positive rate to accept, and an unexercised rule claims coverage it never demonstrated. Re-propose only with a corpus that contains an unconditional verifier.
+
+### `js-sql-template` — rejected, 0 findings, true-positive rate not measurable
+
+Fires on a template literal with `${` passed as the first argument to `query`, `execute`, `exec`, or `raw`, but only when the receiver names a database (`db`, `database`, `pool`, `client`, `conn`, `statement`, `sql`) or the file imports a SQL driver, and only when no values argument follows the template. A parameter array (`query(sql, [ ... ])`), placeholder text with values (`query("… ?", [id])`), a non-database receiver in a file with no driver import, and a bare `query(` are silent. Correct by construction on every shape it was built against: no known false positive, and the two scopes are proved before it fires.
+
+On JobPilot at `37aceae` it produced no findings across 111 non-test files, and on Signal-Android at `2dd5703` no findings across 8,906 non-test Java/Kotlin files. JobPilot's SQL is all `prepare`/`exec` with static text or `?` plus values, and Signal-Android has no TypeScript/JavaScript application SQL.
+
+Withdrawn: zero findings means zero findings to inspect, so the rule cannot show 70% true positives; 0/0 is not a pass. This is the same standard that withdrew `jvm-trust-all` and `jvm-hostname-verifier-true`. A rule that fires on no line of either measured corpus claims coverage the corpus never exercised, and shipping it would hide that gap behind a rule count. The silent shapes stay as `fixtures/express-app/src/sql.ts`, asserted by `scripts/test/test_sql_shapes.py` to produce no finding from any rule. Re-propose only with a corpus that contains SQL assembled from a JS template literal.

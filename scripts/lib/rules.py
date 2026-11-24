@@ -43,8 +43,6 @@ META = {
                         "new Function() compiles a string into code"),
     "js-exec-interp": ("command-injection", 5, 2,
                        "shell command built from an interpolated template"),
-    "js-sql-template": ("sql-injection", 5, 2,
-                        "SQL text built from a template literal carries its values into the query"),
     "js-tls-off": ("tls-verification-disabled", 5, 3,
                    "rejectUnauthorized: false disables certificate checks"),
     "js-secret-aws": ("hardcoded-secret", 5, 3,
@@ -233,21 +231,7 @@ JS_SHELL_CALL = re.compile(r"\b(?:exec|execSync)\s*\(\s*`[^`]*\$\{")
 JS_EXECFILE_CALL = re.compile(r"\b(?:execFile|execFileSync)\s*\(\s*`[^`]*\$\{")
 JS_SHELL_OPTION = re.compile(r"\bshell\s*:\s*true\b")
 
-# A template literal passed to a query call is SQL assembled from values. The
-# call name alone is not proof of a database: `client.query` is also a GraphQL
-# client and `exec` is a process pool. The receiver must name a database, or the
-# file must import a SQL driver. A second argument is the values array for the
-# placeholders, so the query text is not the only thing carrying input.
-JS_SQL_CALL = re.compile(
-    r"([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\.\s*"
-    r"(?:query|execute|exec|raw)\s*\(\s*`")
-JS_DB_RECEIVER = re.compile(r"(?:db|database|pool|client|conn|statement|sql)")
-JS_SQL_IMPORT = re.compile(
-    r"""(?:\bfrom\s*|\brequire\s*\(\s*|\bimport\s*\(\s*)['"]"""
-    r"""(?:node:sqlite|sqlite3|better-sqlite3|@libsql/client|pg|pg-pool|"""
-    r"""postgres|mysql|mysql2|knex)['"]""")
-
-JS_RULE_IDS = tuple(rule for rule, _ in JS_RULES) + ("js-exec-interp", "js-sql-template")
+JS_RULE_IDS = tuple(rule for rule, _ in JS_RULES) + ("js-exec-interp",)
 
 
 def rule_ids_for_ext(ext, rel=None):
@@ -328,95 +312,6 @@ def rule_incidence(files, findings, tracked=None):
     return [(rule, hits[rule]) for rule in sorted(hits)]
 
 
-def _js_template_span(text, index):
-    """Return (offset after the closing backtick, interpolation count).
-
-    `index` points at the opening backtick. Escapes are skipped, and `${ ... }`
-    expressions are consumed as expressions so a nested template or a brace
-    inside them cannot be mistaken for the end of the SQL text.
-    """
-    cursor = index + 1
-    interpolations = 0
-    while cursor < len(text):
-        char = text[cursor]
-        if char == "\\":
-            cursor += 2
-            continue
-        if char == "`":
-            return cursor + 1, interpolations
-        if char == "$" and text[cursor + 1:cursor + 2] == "{":
-            interpolations += 1
-            cursor = _js_expression_end(text, cursor + 2)
-            continue
-        cursor += 1
-    return len(text), interpolations
-
-
-def _js_expression_end(text, index):
-    """Return the offset after the `}` that closes an interpolation expression."""
-    depth = 1
-    cursor = index
-    while cursor < len(text):
-        char = text[cursor]
-        if char == "\\":
-            cursor += 2
-        elif char == "`":
-            cursor, _ = _js_template_span(text, cursor)
-        elif char in "\"'":
-            quote = char
-            cursor += 1
-            while cursor < len(text) and text[cursor] != quote:
-                cursor += 2 if text[cursor] == "\\" else 1
-            cursor += 1
-        elif char == "{":
-            depth += 1
-            cursor += 1
-        elif char == "}":
-            depth -= 1
-            cursor += 1
-            if not depth:
-                return cursor
-        else:
-            cursor += 1
-    return cursor
-
-
-def _js_passes_values(text, index):
-    """True when the call continues with a values argument after the template.
-
-    A second argument is the placeholder values: `query(sql, [...])` binds
-    them instead of splicing them into the SQL. A callback is not values, so
-    `query(sql, (err) => ...)` still carries the interpolated text and fires.
-    The line-local limit is that a callback stored in an identifier reads as a
-    values array and is missed; that is the quiet side of the rule.
-    """
-    cursor = index
-    while cursor < len(text) and text[cursor] in " \t\r\n":
-        cursor += 1
-    if not (cursor < len(text) and text[cursor] == ","):
-        return False
-    cursor += 1
-    while cursor < len(text) and text[cursor] in " \t\r\n":
-        cursor += 1
-    rest = text[cursor:]
-    return not (rest.startswith("function") or rest.startswith("async")
-                or rest.startswith("(") or rest.startswith("=>"))
-
-
-def _js_sql_matches(text):
-    """Offsets of SQL calls whose first argument is an interpolated template."""
-    offsets = []
-    for match in JS_SQL_CALL.finditer(text):
-        receiver = match.group(1)
-        if not (JS_DB_RECEIVER.search(receiver.lower()) or JS_SQL_IMPORT.search(text)):
-            continue
-        end, interpolations = _js_template_span(text, match.end() - 1)
-        if not interpolations or _js_passes_values(text, end):
-            continue
-        offsets.append(match.start())
-    return offsets
-
-
 def _js_defects(text):
     lines = text.split("\n")
     found = []
@@ -443,8 +338,6 @@ def _js_defects(text):
             if JS_SHELL_OPTION.search(lines[line - 1]):
                 add("js-exec-interp", match)
 
-    for offset in _js_sql_matches(text):
-        add_at("js-sql-template", offset)
     return found
 
 

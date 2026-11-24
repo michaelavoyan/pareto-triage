@@ -2,15 +2,11 @@ import { openDb } from './db'
 
 const db = openDb()
 
-export function findJob(id: string) {
-  return db.query(`SELECT * FROM jobs WHERE id = '${id}'`)
-}
+// A withdrawn SQL rule would have needed to reject these shapes; they stay
+// here so the boundary is documented and asserted. No rule fires on this file:
+// the values are passed separately, the text is a placeholder string, and the
+// receiver is not a database.
 
-export function deleteJob(id: string) {
-  return db.execute(`DELETE FROM jobs WHERE id = '${id}'`)
-}
-
-// The values are passed separately, so the text is fixed.
 export function findJobBound(id: string) {
   return db.query(`SELECT * FROM jobs WHERE id = ?`, [id])
 }

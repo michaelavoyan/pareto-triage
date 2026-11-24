@@ -2,22 +2,20 @@
 
 ## 0.5.0
 
-- Added `js-sql-template` (sql-injection, blast 5, silence 2): a template
-  literal with `${…}` passed as the first argument to `query`, `execute`,
-  `exec`, or `raw`. It fires only when the receiver names a database
-  (`db`, `database`, `pool`, `client`, `conn`, `statement`, `sql`) or the file
-  imports a SQL driver, and only when no values argument follows the template.
-  A parameter array (`query(sql, [ ... ])`), placeholder text with values
-  (`query("… ?", [id])`), a non-database receiver in a file with no driver
-  import, and a bare `query(` are silent. Fixtures:
-  `fixtures/express-app/src/sql.ts` (two firing shapes and three silent ones)
-  and `sql-raw.ts` (driver import). The rule count is 27.
-- Measured `js-sql-template` on JobPilot (`37aceae`) and Signal-Android
-  (`2dd5703`): 0 hits on both. JobPilot's SQL is all `prepare`/`exec` with
-  static text or `?` plus values, and Signal-Android has no
-  TypeScript/JavaScript application SQL. Its real-world precision is
-  therefore **unmeasured**, not 100; the fixtures are the evidence that it
-  fires and stays quiet where designed.
+- Withdrew the `js-sql-template` candidate before release. It was correct by
+  construction: a template literal with `${…}` as the first argument to
+  `query`/`execute`/`exec`/`raw` fired only on a database receiver or in a file
+  importing a SQL driver, and only with no values argument. Measured on JobPilot
+  (`37aceae`, 111 non-test files) and Signal-Android (`2dd5703`, 8,906 non-test
+  files) it produced 0 findings on both: JobPilot's SQL is all `prepare`/`exec`
+  with static text or `?` plus values, and Signal-Android has no
+  TypeScript/JavaScript application SQL. With no finding to inspect its
+  precision is unmeasured, and 0/0 is not a pass under the 0.70 true-positive
+  gate — the same standard that withdrew `jvm-trust-all`. The two reporting and
+  CI deliverables below ship; the rule does not. The silent shapes (parameter
+  array, `?` placeholders, non-database receiver) stay in
+  `fixtures/express-app/src/sql.ts`, asserted to produce no finding from any
+  rule. The rule count is 26.
 - Rejected the Kotlin string-template extension of `jvm-sql-injection` after
   measuring it: 12 findings on Signal-Android, all 12 deliberate identifier
   interpolation (table/column names, `$table`, `${index * 500}`), 0 true

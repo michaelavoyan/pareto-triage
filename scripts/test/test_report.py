@@ -397,7 +397,7 @@ class RuleIncidenceAppendixTests(unittest.TestCase):
         self.assertIn("unmeasured", html)
         # A rule that ran and found nothing must not be called unexercised.
         self.assertIn("<tr><td><code>js-exec-interp</code></td><td>0 hits</td>", html)
-        self.assertEqual(published["rule_incidence"]["js-sql-template"], 3)
+        self.assertEqual(published["rule_incidence"]["js-eval"], 1)
 
     def test_a_calibration_file_supplies_precision(self):
         with tempfile.TemporaryDirectory() as tmp:

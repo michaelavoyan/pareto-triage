@@ -34,7 +34,7 @@ class ScopeEvidence(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             scope = json.loads((out / "scope.json").read_text())
             ranked = json.loads((out / "ranked.json").read_text())
-        self.assertEqual(scope["rule_incidence"]["js-sql-template"], 3)
+        self.assertEqual(scope["rule_incidence"]["js-eval"], 1)
         self.assertEqual(ranked["rule_incidence"], scope["rule_incidence"])
         # A rule that ran and found nothing is present at zero, not absent.
         self.assertEqual(ranked["rule_incidence"]["js-new-function"], 0)

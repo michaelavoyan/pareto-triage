@@ -8,7 +8,6 @@
     "js-secret-aws": 0,
     "js-secret-pem": 0,
     "js-secret-stripe": 0,
-    "js-sql-template": 3,
     "js-tls-off": 1,
     "py-secret-aws": 0,
     "py-secret-pem": 0,
