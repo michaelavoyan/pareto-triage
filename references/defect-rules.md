@@ -8,7 +8,7 @@ Swift and Objective-C are not in this file because there are no rules for them. 
 
 ## Rules
 
-The tables below list all 28 active rules.
+The tables below list all 26 active rules.
 
 ### Python (AST-based, `ast.parse`)
 
@@ -37,11 +37,8 @@ The tables below list all 28 active rules.
 | `js-secret-pem` | hardcoded-secret | 5 | 3 | `BEGIN … PRIVATE KEY` |
 | `js-secret-stripe` | hardcoded-secret | 5 | 3 | `sk_live_…` |
 | `js-dangerous-html` | xss | 5 | 1 | `dangerouslySetInnerHTML` |
-| `js-unvalidated-input` | missing-boundary-validation | 3 | 3 | `req.body.X`, `req.query.X`, or `req.params.X` reaching `query`/`execute`/`prepare`/`run` or a shell call in a route file |
 
 `exec(` is not a shell call by itself: `db.exec(...)` on a SQLite handle, a query runner, and a process pool all use the name. `js-exec-interp` requires the file to import `child_process` (`import … from 'child_process'`, `require('child_process')`, or the `node:` form) and the call to be `exec` or `execSync`. `execFile` and `execFileSync` take a program and an argument vector and reach a shell only when the same line passes `shell: true`, so only that shape fires; an interpolated argument without the option is silent. `spawn` and `spawnSync` are not matched for the same reason: without `shell: true` an interpolated argument is one element of an argument vector, not a shell string. The cost is a false negative for `spawn(..., { shell: true })` and for `execFile` with the option on a later line. Both are recorded here rather than guessed at from a line that does not show the shell.
-
-`js-unvalidated-input` is the only JS rule that reads past one line. It requires a route registration (`app`/`router`/`server`/`fastify` plus a verb) in the file, then follows a value from `req.body.X`, `req.query.X`, or `req.params.X` — directly or through one assignment — to a DB method (`query`, `execute`, `prepare`, `run`) or, in a file importing `child_process`, a shell call. A validator import or call before the sink (`zod`, `joi`, `yup`, `express-validator`, `celebrate`) silences the file, and `Number(...)`, `parseInt(...)`, or `JSON.parse(...)` on the same statement counts as the parse for that scalar. It is one hop, not dataflow: a value copied through a second function is missed, and a validator that runs after the sink does not silence it.
 
 ### Java / Kotlin (regex, comment lines skipped)
 
@@ -51,13 +48,10 @@ The tables below list all 28 active rules.
 | `jvm-sql-injection` | sql-injection | 5 | 2 | `executeQuery`/`executeUpdate`/`execute` with `+` on the same line and a statement verb (`SELECT`, `INSERT`, `UPDATE`, `DELETE`, `REPLACE INTO`) inside the call |
 | `jvm-weak-hash` | weak-hash | 3 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
 | `jvm-object-input-stream` | unsafe-deserialization | 5 | 3 | `new ObjectInputStream(` |
-| `jvm-write-without-transaction` | non-atomic-write | 3 | 2 | two DB writes (`insert`/`update`/`delete`/`replace`/`upsert`/`execSQL`) in one method with no transaction call |
 
 The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-weak-hash` proves the algorithm at the line, never its role: an MD5 used only to bucket a value — a cache key, a dictionary key, a display-name collision digest — fires the same as an MD5 guarding a signature. Detection is certain, severity is contextual, so blast is 3 rather than 5. The `WeakHashBucketing` fixture is that shape and is expected to fire.
 
 Line-local precision needs one more test each. `execute(` is a name shared by SQL statements, executors, and callback dispatchers, so `jvm-sql-injection` also requires a statement verb inside the call's parentheses: `keyedExecutor.execute("Call::" + id, …)` is quiet, `stmt.execute("DELETE FROM t WHERE id = " + id)` is not. `jvm-exec-injection` requires at least one `+` operand that is not a compile-time constant: a lowercase name, a field, a parameter, an array element, or a call is a value; `UPPER_SNAKE_CASE` names (`FILTER_SPEC`, `BuildConfig.ENDPOINT`), quoted literals, and numeric literals are constants. `exec("logcat -d " + FILTER_SPEC)` is a fixed command, not injection; `exec("convert " + path)` is. Both rules ignore calls inside comments and string literals.
-
-`jvm-write-without-transaction` reads method bodies with the same brace matcher `context` uses. It counts a write only when the receiver names a database (`db`, `database`, `writableDatabase`, `readableDatabase`, `SignalDatabase…`, a `…Database`/`…Dao` receiver, or a content resolver), so `Cipher.update` and `MessageDigest.update` do not count, and `execSQL` needs no receiver. Two writes with no `beginTransaction`, `inTransaction`, `withTransaction`, or `endTransaction` in the body fire once, at the first write. The rule cannot see a transaction opened by the caller, a `withinTransaction` extension, or the framework transaction around `onCreate`/`onUpgrade`; those limits are why its measured precision is recorded under "Considered and rejected".
 
 ## Effort for a rule match
 
@@ -193,3 +187,44 @@ Fires on a template literal with `${` passed as the first argument to `query`, `
 On JobPilot at `37aceae` it produced no findings across 111 non-test files, and on Signal-Android at `2dd5703` no findings across 8,906 non-test Java/Kotlin files. JobPilot's SQL is all `prepare`/`exec` with static text or `?` plus values, and Signal-Android has no TypeScript/JavaScript application SQL.
 
 Withdrawn: zero findings means zero findings to inspect, so the rule cannot show 70% true positives; 0/0 is not a pass. This is the same standard that withdrew `jvm-trust-all` and `jvm-hostname-verifier-true`. A rule that fires on no line of either measured corpus claims coverage the corpus never exercised, and shipping it would hide that gap behind a rule count. The silent shapes stay as `fixtures/express-app/src/sql.ts`, asserted by `scripts/test/test_sql_shapes.py` to produce no finding from any rule. Re-propose only with a corpus that contains SQL assembled from a JS template literal.
+
+### `js-unvalidated-input` — rejected, 0 findings on both corpora, precision unmeasured
+
+Fires when a route handler reads `req.body.X`, `req.query.X`, or `req.params.X` and passes that value — directly or through one assignment — to a DB call (`query`, `execute`, `prepare`, `run`) or, in a file importing `child_process`, a shell call. A validator import or call before the sink (`zod`, `joi`, `yup`, `express-validator`, `celebrate`) silences the file, and `Number(...)`, `parseInt(...)`, or `JSON.parse(...)` on the same statement is the parse for that scalar. Three firing shapes and three silent shapes are fixtures.
+
+On JobPilot at `4cf86d0` it produced no findings across 113 non-test files. JobPilot's HTTP layer is `createServer` with `pathname === …` cases rather than Express route registration, and its body values arrive as `body.X` from `readJsonBody`, which calls `JSON.parse`; neither the route-registration requirement nor the parse rule can fire. On Signal-Android at `2dd5703` it produced no findings across 8,906 non-test files; the five non-test JS files are a debug-log viewer and spinner assets, none a route.
+
+Withdrawn: 0 hits on both corpora means no hit to classify, and 0/0 is not a pass under the 0.70 gate — the same standard that withdrew `js-sql-template`, `jvm-trust-all`, and `jvm-hostname-verifier-true`. The fixtures stay: `fixtures/express-app/src/unvalidated.ts` and `validated.ts`, asserted by `scripts/test/test_js_unvalidated.py` to produce no finding. Re-propose only with a corpus that uses `req.body.X`/`req.query.X`/`req.params.X` in registered routes.
+
+### `jvm-write-without-transaction` — rejected, 5/230 precision (0.02)
+
+Fires once on a method body containing two or more database writes (`insert`, `update`, `delete`, `replace`, `upsert`, `execSQL`) with no `beginTransaction`, `inTransaction`, `withTransaction`, or `endTransaction` in that body. A write counts only when its receiver names a database (`db`, `database`, `writableDatabase`, `readableDatabase`, a `…Database`/`…Dao` receiver, or a content resolver), so `Cipher.update` and `MessageDigest.update` are excluded.
+
+On JobPilot it produced 0 findings: the repo has no Java or Kotlin source. On Signal-Android at `2dd5703` it produced 230 findings across 8,906 non-test files. Every finding was read and classified:
+
+| Class | Hits | What it was |
+|---|---|---|
+| TRUE | 5 | dependent data writes, no transaction in the method or a visible caller |
+| DELIBERATE | 39 | independent cleanup, per-row recovery, bulk import, or a job that retries |
+| FALSE | 186 | see the breakdown below |
+| **Total** | **230** | 5/230 = **2.17%** true positives |
+
+The five TRUE findings, which are the rule's only defensible hits:
+
+| Where | Method |
+|---|---|
+| `app/src/main/java/org/thoughtcrime/securesms/database/CallTable.kt:965` | `updateGroupCallState` |
+| `app/src/main/java/org/thoughtcrime/securesms/database/MessageTable.kt:3259` | `insertMessageInbox` (edit path) |
+| `app/src/main/java/org/thoughtcrime/securesms/database/MessageTable.kt:3746` | `insertMessageOutbox` (edit path) |
+| `app/src/main/java/org/thoughtcrime/securesms/database/RecipientTable.kt:2685` | `setPni` |
+| `app/src/main/java/org/thoughtcrime/securesms/database/RecipientTable.kt:2976` | `writePnpChangeSetToDisk` |
+
+The 186 false positives, by cause:
+
+- **120** are `onCreate`, `onUpgrade`, `migrate`, or schema-creation methods. SQLiteOpenHelper runs `onCreate`/`onUpgrade` inside a transaction, and the migration helpers are called from there; the transaction is real and outside the method the rule reads.
+- **45** call `withinTransaction`, Signal's extension. The rule's four names do not include it, so it read a transaction as absent.
+- **12** are mutually exclusive branches (an `if`/`else`, a `when`, or a `return` before the second write). Only one write executes; the rule counted both.
+- **7** are remap methods whose callers call `ensureInTransaction()` — the merge path opens the transaction one frame up.
+- **2** are a method declaration named `execSQL`, where the declaration and its one call were counted as two writes.
+
+Even counting all 39 DELIBERATE findings as acceptable, (5 + 39) / 230 = 19.1%, still far below 0.70. Withdrawn: a method-local check cannot see the transaction its caller, the framework, or an extension opens, and it cannot tell whether two writes are one logical operation. That is an interprocedural question, not a line or body question. The fixture pair stays: `NonAtomicWrite.java` (two writes, no transaction) and `TransactionalWrite.java` (the same writes inside one), asserted silent by `scripts/test/test_jvm_write_transaction.py`. Re-propose only with interprocedural transaction resolution.

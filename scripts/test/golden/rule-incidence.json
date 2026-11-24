@@ -9,7 +9,6 @@
     "js-secret-pem": 0,
     "js-secret-stripe": 0,
     "js-tls-off": 1,
-    "js-unvalidated-input": 3,
     "py-secret-aws": 0,
     "py-secret-pem": 0,
     "py-secret-stripe": 0
@@ -19,7 +18,6 @@
     "jvm-object-input-stream": 1,
     "jvm-sql-injection": 1,
     "jvm-weak-hash": 2,
-    "jvm-write-without-transaction": 1,
     "py-secret-aws": 0,
     "py-secret-pem": 0,
     "py-secret-stripe": 0

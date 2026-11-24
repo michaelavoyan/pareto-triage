@@ -518,7 +518,6 @@ def _jvm_sites(text, rel):
                     end_index = _expression_end(text, body)
             out.append({
                 "name": name,
-                "kind": kind,
                 "start": start,
                 "end": max(start, _line_of(text, end_index)),
             })

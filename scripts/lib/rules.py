@@ -53,8 +53,6 @@ META = {
                          "live Stripe key committed to source"),
     "js-dangerous-html": ("xss", 5, 1,
                           "dangerouslySetInnerHTML renders unescaped markup"),
-    "js-unvalidated-input": ("missing-boundary-validation", 3, 3,
-                             "request input reaches a database or shell call unvalidated"),
     "jvm-exec-injection": ("command-injection", 5, 2,
                            "process argument built by string concatenation"),
     "jvm-sql-injection": ("sql-injection", 5, 2,
@@ -63,8 +61,6 @@ META = {
                       "MD5 and SHA-1 are broken for collision resistance"),
     "jvm-object-input-stream": ("unsafe-deserialization", 5, 3,
                                 "ObjectInputStream turns its input into arbitrary objects"),
-    "jvm-write-without-transaction": ("non-atomic-write", 3, 2,
-                                      "two database writes with no transaction"),
     "py-secret-aws": ("hardcoded-secret", 5, 3,
                       "AWS access key committed to source"),
     "py-secret-pem": ("hardcoded-secret", 5, 3,
@@ -117,7 +113,6 @@ PY_RULE_IDS = tuple(sorted(rule for rule in META if rule.startswith("py-")))
 JVM_RULE_IDS = (
     "jvm-exec-injection", "jvm-sql-injection",
     "jvm-weak-hash", "jvm-object-input-stream",
-    "jvm-write-without-transaction",
 ) + tuple(rule for rule, _ in SECRET_PATTERNS)
 CONFIG_RULE_IDS = tuple(rule for rule, _ in CONFIG_SECRETS)
 
@@ -236,8 +231,7 @@ JS_SHELL_CALL = re.compile(r"\b(?:exec|execSync)\s*\(\s*`[^`]*\$\{")
 JS_EXECFILE_CALL = re.compile(r"\b(?:execFile|execFileSync)\s*\(\s*`[^`]*\$\{")
 JS_SHELL_OPTION = re.compile(r"\bshell\s*:\s*true\b")
 
-JS_RULE_IDS = tuple(rule for rule, _ in JS_RULES) + (
-    "js-exec-interp", "js-unvalidated-input")
+JS_RULE_IDS = tuple(rule for rule, _ in JS_RULES) + ("js-exec-interp",)
 
 
 def rule_ids_for_ext(ext, rel=None):
@@ -344,82 +338,6 @@ def _js_defects(text):
             if JS_SHELL_OPTION.search(lines[line - 1]):
                 add("js-exec-interp", match)
 
-    found.extend(_js_unvalidated_input(text))
-    return found
-
-
-# Request input: `req.body.id`, `req.query.q`, `req.params.slug`, and the
-# optional-chaining forms. The rule needs both a read and a sink, so it is not
-# one of the line-local regexes above.
-JS_REQUEST_READ = re.compile(
-    r"\breq\s*\??\s*\.\s*(?:body|query|params)\s*\??\s*\.\s*([A-Za-z_$][\w$]*)")
-JS_ALIAS = re.compile(
-    r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*req\s*\??\s*\."
-    r"\s*(?:body|query|params)\s*\??\s*\.\s*[A-Za-z_$][\w$]*")
-JS_ROUTE_REGISTRATION = re.compile(
-    r"\b(?:app|router|server|fastify|apiRouter|express)\s*\.\s*"
-    r"(?:get|post|put|patch|delete|all|use)\s*\(")
-JS_VALIDATOR = re.compile(r"\b(?:zod|joi|yup|express-validator|celebrate)\b")
-JS_PARSED = re.compile(r"\b(?:Number|parseInt|parseFloat|JSON\s*\.\s*parse)\s*\(")
-JS_DB_SINK = re.compile(r"\.\s*(?:query|execute|prepare|run)\s*\(")
-JS_SHELL_SINK = re.compile(
-    r"\b(?:exec|execSync|execFile|execFileSync|spawn|spawnSync)\s*\(")
-
-
-def _js_unvalidated_input(text):
-    """Request values that reach a database or shell call with no validation.
-
-    A value counts only when a route registration is in the file (otherwise
-    `req` is some other object) and the sink is a DB method or a shell call.
-    The rule is deliberately a file-level taint pass: `req.body.id` is often
-    assigned to a name first. Validation writes a line before the sink, and a
-    parsing call on the same statement is the validation for a scalar.
-    """
-    if not JS_ROUTE_REGISTRATION.search(text):
-        return []
-
-    lines = text.split("\n")
-    has_shell = bool(CHILD_PROCESS_IMPORT.search(text))
-    validator_lines = [number for number, line in enumerate(lines, start=1)
-                       if JS_VALIDATOR.search(line)]
-
-    tainted = {}
-    for number, line in enumerate(lines, start=1):
-        if line.strip().startswith(("//", "*")):
-            continue
-        for match in JS_ALIAS.finditer(line):
-            if JS_PARSED.search(line[:match.end()]):
-                continue
-            tainted[match.group(1)] = number
-
-    found = []
-    for number, line in enumerate(lines, start=1):
-        stripped = line.strip()
-        if stripped.startswith(("//", "*", "/*")):
-            continue
-        sink = JS_DB_SINK.search(line)
-        if sink is None and has_shell:
-            sink = JS_SHELL_SINK.search(line)
-        if sink is None:
-            continue
-        if any(validator < number for validator in validator_lines):
-            continue
-
-        direct = None
-        for match in JS_REQUEST_READ.finditer(line):
-            if JS_PARSED.search(line[:match.start()]):
-                continue
-            direct = match
-            break
-        if direct is None:
-            for name, declared in tainted.items():
-                if declared < number and re.search(
-                        r"(?<![\w$.])%s\b" % re.escape(name), line):
-                    direct = sink
-                    break
-        if direct is None:
-            continue
-        found.append(("js-unvalidated-input", number, stripped[:300]))
     return found
 
 
@@ -429,40 +347,6 @@ JVM_SQL_CALL = re.compile(r"\b(?:executeQuery|executeUpdate|execute)\s*\(")
 JVM_SQL_VERB = re.compile(r"\b(?:SELECT|INSERT|UPDATE|DELETE|REPLACE\s+INTO)\b", re.I)
 JVM_WEAK_HASH = re.compile(r"\bMessageDigest\s*\.\s*getInstance\s*\(\s*\"(?:MD5|SHA-1)\"")
 JVM_OBJECT_INPUT = re.compile(r"\bnew\s+ObjectInputStream\s*\(")
-JVM_WRITE = re.compile(
-    r"(?:(?P<receiver>[A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\.\s*)?"
-    r"(?P<call>insert|update|delete|replace|upsert|execSQL)\s*\(")
-JVM_DB_RECEIVER = re.compile(r"(?:[Dd]atabase|[Dd]ao\b|Sqlite|SQLite)")
-JVM_DB_NAMES = {"db", "database", "writableDatabase", "readableDatabase",
-                "resolver", "contentResolver"}
-JVM_DB_CALLS = {"getContentResolver()", "getWritableDatabase()", "getReadableDatabase()"}
-JVM_TRANSACTION = re.compile(
-    r"\b(?:beginTransaction|inTransaction|withTransaction|endTransaction)\b")
-
-
-def _jvm_db_writes(blanked):
-    """Write calls whose receiver is a database, not a cipher or a UI model.
-
-    `update(` alone is shared by `Cipher.update`, `MessageDigest.update`, a
-    controller, and a SQLite table. The receiver has to name a database, a
-    content resolver, or a DAO for the call to count. `execSQL` needs no
-    receiver because only SQLite uses the name.
-    """
-    found = []
-    for match in JVM_WRITE.finditer(blanked):
-        receiver = re.sub(r"\s+", "", match.group("receiver") or "")
-        call = match.group("call")
-        if not receiver:
-            if call == "execSQL":
-                found.append(match)
-            continue
-        last = receiver.split(".")[-1]
-        before = blanked[max(0, match.start() - 80):match.start()]
-        if (last in JVM_DB_NAMES or JVM_DB_RECEIVER.search(receiver)
-                or any(name in before for name in JVM_DB_CALLS)):
-            found.append(match)
-    return found
-
 # A '+' operand that is a literal or a compile-time constant. UPPER_SNAKE_CASE
 # names (FILTER_SPEC, BuildConfig.ENDPOINT) are constants; a lowercase name, a
 # field, a parameter, an array element, or a call is a value that can vary.
@@ -583,7 +467,7 @@ def _is_constant_operand(operand):
     return bool(JVM_UPPER_NAME.match(text.split(".")[-1].strip()))
 
 
-def _jvm_defects(text, rel=None):
+def _jvm_defects(text):
     lines = text.split("\n")
     blanked_text = _blank_noncode(text)
     blank_lines = blanked_text.split("\n")
@@ -615,51 +499,6 @@ def _jvm_defects(text, rel=None):
         if JVM_OBJECT_INPUT.search(line_blanked):
             found.append(("jvm-object-input-stream", number, stripped[:300]))
 
-    found.extend(_jvm_write_without_transaction(text, lines, rel))
-    return found
-
-
-def _jvm_write_without_transaction(text, lines, rel):
-    """Methods with two or more DB writes and no transaction call.
-
-    Method bounds come from the same brace matcher `context` uses, so the
-    body is the code a reader would call the method. A method nested inside
-    another is judged on its own body, never as part of its container. Writes
-    inside comments or literals are masked out before counting.
-    """
-    if rel is None:
-        return []
-
-    from .context import _jvm_sites
-
-    sites = [site for site in _jvm_sites(text, rel) if site.get("kind") == "method"]
-    innermost = []
-    for site in sites:
-        start, end = site["start"], site["end"]
-        if any(other is not site
-               and other["start"] <= start and end <= other["end"]
-               and (other["start"], other["end"]) != (start, end)
-               for other in sites):
-            continue
-        innermost.append(site)
-
-    found = []
-    for site in innermost:
-        start, end = site["start"], site["end"]
-        if end <= start:
-            continue
-        body = "\n".join(lines[start - 1:end])
-        blanked = _blank_noncode(body)
-        if JVM_TRANSACTION.search(blanked):
-            continue
-        writes = _jvm_db_writes(blanked)
-        if len(writes) < 2:
-            continue
-        line = start + blanked.count("\n", 0, writes[0].start())
-        stripped = lines[line - 1].strip()
-        if stripped.startswith(("//", "*", "/*")):
-            continue
-        found.append(("jvm-write-without-transaction", line, stripped[:300]))
     return found
 
 
@@ -685,7 +524,7 @@ def detect_defects(files, tracked=None):
             pairs = _js_defects(f["text"])
         elif f["ext"] in JVM_EXT:
             # The Java/Kotlin secret patterns are the shared ones: no duplicate rule ids.
-            pairs = _jvm_defects(f["text"], rel) + _line_hits(f["text"], SECRET_PATTERNS)
+            pairs = _jvm_defects(f["text"]) + _line_hits(f["text"], SECRET_PATTERNS)
         elif is_config_secret_file(rel, f["ext"]):
             if tracked is not None and rel not in tracked:
                 continue

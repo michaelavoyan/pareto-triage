@@ -58,11 +58,11 @@ The report also says what carries the verdict: an attribution sentence splits th
 
 ## How it decides
 
-28 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, weak hashing, mutable defaults.
+26 rules catch what can be proven from a line: `eval`, shell injection, SQL built by concatenation, disabled TLS, committed keys, bare `except`, weak hashing, mutable defaults.
 
 The judgement calls — missing timeouts, swallowed errors, no idempotency — go to the agent one function at a time, and it must quote the line it's judging. Invent a quote, lose the finding.
 
-Java and Kotlin are scanned for entrypoints, reachability, and defects. Five JVM rules cover command injection (`Runtime.exec` or `ProcessBuilder` with concatenation), SQL built by concatenation, `MessageDigest` with MD5 or SHA-1, and `new ObjectInputStream`. The secret rules run on `.java`, `.kt`, and `.kts` too.
+Java and Kotlin are scanned for entrypoints, reachability, and defects. Four JVM rules cover command injection (`Runtime.exec` or `ProcessBuilder` with concatenation), SQL built by concatenation, `MessageDigest` with MD5 or SHA-1, and `new ObjectInputStream`. The secret rules run on `.java`, `.kt`, and `.kts` too.
 
 Swift and Objective-C support is reachability and site extraction only. `#import` resolves header paths against the scanned tree, falling back to a basename only when exactly one scanned file carries it; Swift target membership comes from `project.pbxproj`, so two Swift files are neighbours only when they share a target and one names a type the other declares. `import Module` is not an edge: it names a module, not a file, and it produced 97% of the graph on Signal-iOS while carrying no call information. Entrypoints are `@main`/`@UIApplicationMain`/`UIApplicationMain(`, app delegates, and `UIViewController`/`UIView` subclasses through four hops of project bases, including ObjC `@interface` declarations; `context` extracts Swift and Objective-C functions as candidate sites.
 

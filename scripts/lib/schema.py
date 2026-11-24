@@ -30,8 +30,6 @@ DEFECT_TAXONOMIES = [
     "weak-hash",
     "debug-mode-enabled",
     "xss",
-    "missing-boundary-validation",
-    "non-atomic-write",
 ]
 
 RANGES = {"reach": (0, 5), "blast": (0, 5), "silence": (1, 3), "effort": (1, 5)}

@@ -1,4 +1,13 @@
-"""jvm-write-without-transaction: two writes with no transaction in the method."""
+"""`jvm-write-without-transaction` was withdrawn; its fixtures stay silent.
+
+The rule fired on every method with two writes and no transaction call in the
+body. Measured on Signal-Android, 5 of 230 findings were true; the rest were a
+transaction the method did not contain (withinTransaction, the caller's
+`ensureInTransaction`, or the framework's onCreate/onUpgrade transaction),
+mutually exclusive branches, or deliberate independent writes. JobPilot has no
+JVM source, so incidence there was zero. The two fixtures remain so a future
+proposal has to make this test fail before it ships.
+"""
 
 import posixpath
 import sys
@@ -10,19 +19,22 @@ SCRIPTS = HERE.parent
 FIXTURES = SCRIPTS.parent / "fixtures" / "jvm-rules"
 
 sys.path.insert(0, str(SCRIPTS))
-from lib.rules import detect_defects  # noqa: E402
+from lib.rules import META, detect_defects  # noqa: E402
 
 
 def source(rel, text):
     return {"rel": rel, "ext": posixpath.splitext(rel)[1], "text": text}
 
 
-class WriteWithoutTransactionTests(unittest.TestCase):
-    def rules(self, text, rel="A.java"):
+class WithdrawnWriteTransactionTests(unittest.TestCase):
+    def detect(self, text, rel):
         findings, _ = detect_defects([source(rel, text)])
-        return [(f["rule"], f["line"], f["evidence"]) for f in findings]
+        return findings
 
-    def test_two_writes_with_no_transaction_fire_once(self):
+    def test_the_rule_is_not_shipped(self):
+        self.assertNotIn("jvm-write-without-transaction", META)
+
+    def test_two_writes_with_no_transaction_produce_no_finding(self):
         text = (
             "public final class A {\n"
             "    void transfer(SQLiteDatabase db) {\n"
@@ -31,77 +43,14 @@ class WriteWithoutTransactionTests(unittest.TestCase):
             "    }\n"
             "}\n"
         )
-        self.assertEqual([(rule, line) for rule, line, _ in self.rules(text)],
-                         [("jvm-write-without-transaction", 3)])
+        self.assertEqual(self.detect(text, "A.java"), [])
 
-    def test_a_transaction_call_in_the_method_silences_it(self):
-        for call in ("beginTransaction()", "endTransaction()", "inTransaction {",
-                     "withTransaction {"):
-            text = (
-                "public final class A {\n"
-                "    void transfer(SQLiteDatabase db) {\n"
-                "        db.%s\n"
-                "        db.insert(TABLE, null, values);\n"
-                "        db.delete(TABLE, \"id = ?\", args);\n"
-                "    }\n"
-                "}\n" % call
-            )
-            self.assertEqual(self.rules(text), [], call)
-
-    def test_one_write_is_silent(self):
-        text = (
-            "public final class A {\n"
-            "    void rename(SQLiteDatabase db) {\n"
-            "        db.update(TABLE, values, \"id = ?\", args);\n"
-            "    }\n"
-            "}\n"
-        )
-        self.assertEqual(self.rules(text), [])
-
-    def test_writes_in_comments_and_literals_do_not_count(self):
-        text = (
-            "public final class A {\n"
-            "    void rename(SQLiteDatabase db) {\n"
-            "        // db.insert(TABLE, null, values);\n"
-            "        String sql = \"update jobs set x = 1\";\n"
-            "        db.update(TABLE, values, \"id = ?\", args);\n"
-            "    }\n"
-            "}\n"
-        )
-        self.assertEqual(self.rules(text), [])
-
-    def test_a_class_body_is_not_a_method(self):
-        text = (
-            "public final class A {\n"
-            "    void one(SQLiteDatabase db) { db.insert(TABLE, null, values); }\n"
-            "    void two(SQLiteDatabase db) { db.delete(TABLE, \"id = ?\", args); }\n"
-            "}\n"
-        )
-        self.assertEqual(self.rules(text), [])
-
-    def test_kotlin_methods_fire(self):
-        text = (
-            "class A {\n"
-            "    fun transfer(db: SQLiteDatabase) {\n"
-            "        db.insert(TABLE, null, values)\n"
-            "        db.delete(TABLE, \"id = ?\", args)\n"
-            "    }\n"
-            "}\n"
-        )
-        self.assertEqual([rule for rule, _, _ in self.rules(text, "A.kt")],
-                         ["jvm-write-without-transaction"])
-
-    def test_the_fixture_pairs_a_firing_method_with_silent_ones(self):
-        findings, _ = detect_defects([
-            {"rel": "NonAtomicWrite.java", "ext": ".java",
-             "text": (FIXTURES / "src/main/java/com/acme/NonAtomicWrite.java")
-             .read_text(encoding="utf-8")},
-            {"rel": "TransactionalWrite.java", "ext": ".java",
-             "text": (FIXTURES / "src/main/java/com/acme/TransactionalWrite.java")
-             .read_text(encoding="utf-8")},
-        ])
-        self.assertEqual([(f["file"], f["rule"]) for f in findings],
-                         [("NonAtomicWrite.java", "jvm-write-without-transaction")])
+    def test_the_fixture_pair_produces_no_finding(self):
+        names = ("NonAtomicWrite.java", "TransactionalWrite.java")
+        files = [source(name, (FIXTURES / "src/main/java/com/acme" / name)
+                        .read_text(encoding="utf-8")) for name in names]
+        findings, _ = detect_defects(files)
+        self.assertEqual(findings, [])
 
 
 if __name__ == "__main__":
