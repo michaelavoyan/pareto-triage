@@ -49,7 +49,7 @@ The tables below list all 26 active rules.
 | `jvm-weak-hash` | weak-hash | 3 | 3 | `MessageDigest.getInstance("MD5")` or `"SHA-1"` |
 | `jvm-object-input-stream` | unsafe-deserialization | 5 | 3 | `new ObjectInputStream(` |
 
-The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-weak-hash` proves the algorithm at the line, never its role: an MD5 used only to bucket a value — a cache key, a dictionary key, a display-name collision digest — fires the same as an MD5 guarding a signature. Detection is certain, severity is contextual, so blast is 3 rather than 5. The `WeakHashBucketing` fixture is that shape and is expected to fire.
+The JVM rules are line-local by design: a `+`, a quote, an algorithm name, or a constructor call is either there or it is not. `jvm-weak-hash` proves the algorithm at the line, never its role: an MD5 used only to bucket a value — a cache key, a dictionary key, a display-name collision digest — fires the same as an MD5 guarding a signature. Detection is certain, severity is contextual, so blast is 3 rather than 5. For the same reason it ranks but never blocks: `weak-hash` is not in `blocking_security`, because whether MD5 or SHA-1 protects anything is a question about the digest's use, not about the line. The `WeakHashBucketing` fixture is that shape and is expected to fire.
 
 Line-local precision needs one more test each. `execute(` is a name shared by SQL statements, executors, and callback dispatchers, so `jvm-sql-injection` also requires a statement verb inside the call's parentheses: `keyedExecutor.execute("Call::" + id, …)` is quiet, `stmt.execute("DELETE FROM t WHERE id = " + id)` is not. `jvm-exec-injection` requires at least one `+` operand that is not a compile-time constant: a lowercase name, a field, a parameter, an array element, or a call is a value; `UPPER_SNAKE_CASE` names (`FILTER_SPEC`, `BuildConfig.ENDPOINT`), quoted literals, and numeric literals are constants. `exec("logcat -d " + FILTER_SPEC)` is a fixed command, not injection; `exec("convert " + path)` is. Both rules ignore calls inside comments and string literals.
 
@@ -104,19 +104,21 @@ A secret finding means a **committed** secret. When the scanned tree is inside a
 When the commit set cannot be established — git is not installed, the tree is not a repository, or `git ls-files` fails — the wider behaviour stands and `scope.json` records why:
 
 ```json
-"secrets": {"tracked_only": false, "reason": "not inside a git work tree: commit status is unknown, so every config file is scanned"}
+"secrets": {"tracked_only": false, "covers": "every config file", "reason": "not inside a git work tree: commit status is unknown, so every config file is scanned"}
 ```
 
-With a work tree the entry is `"tracked_only": true` and the reason names `git ls-files`. The field is written by `gate`, so the scope a scan used is inspectable after the fact; `detect` re-checks it and warns if the commit set changed.
+With a work tree the entry is `"tracked_only": true`, `"covers": "git-tracked config files"`, and the reason names `git ls-files`. The field is written by `gate`, so the scope a scan used is inspectable after the fact; `detect` re-checks it and warns if the commit set changed. When the scan is wider than the commit set, `detect` prints a `warning` line saying that secret scanning covers every config file rather than tracked ones, so the wider claim is visible without reading the artifact.
 
 | Rule | Where | Matches |
 |---|---|---|
 | `py-secret-aws` | any scanned file | `AKIA` + 16 characters |
 | `py-secret-pem` | any scanned file | a private-key block header |
 | `py-secret-stripe` | any scanned file | `sk_live_` + 10 |
-| `cfg-secret-generic` | tracked config files | a credential key assigned a literal value |
+| `cfg-secret-generic` | tracked config files | a credential key assigned a literal value that is not a placeholder |
 
-The generic rule ignores values that are code references: `process.env.TOKEN`, `os.environ[...]`, and `${VAR}` are not secrets, and masking them would make the evidence say something false.
+Example configuration is committed on purpose, so the secret rules skip a file whose path marks it as a sample or template: any path segment containing `sample`, `example`, `template`, or `placeholder`, or ending in `.tmpl`, `.dist`, or `.example`. This applies to the generic rule and the PEM, AWS, and Stripe patterns, in config and source alike. The skipped config files are not silently dropped: `detect` prints `, N placeholder files skipped`, and `scope.json` records `secrets.placeholder_files_skipped` and the `secrets.placeholder_files` list. A source file named like a sample still has its code rules run; only its secret rules are skipped, so it is not counted as a skipped config file.
+
+A matched value is also structurally a placeholder when it is a `secret://…` reference, one repeated character or a sequential alphabet/digit run, a value ending in `…` or `...`, a value containing `<`, `>`, or `${`, or a PEM block whose body is shorter than 128 base64 characters or contains filler. The check is on the value, never on the key name, so a realistic AWS/Stripe key, a 40-character base64 value, and a full-length PEM body still fire. The generic rule also ignores values that are code references: `process.env.TOKEN`, `os.environ[...]`, and `${VAR}` are not secrets, and masking them would make the evidence say something false.
 
 ## Redaction
 

@@ -267,9 +267,14 @@ class JvmRuleTests(unittest.TestCase):
     def test_jvm_files_get_the_shared_secret_rules(self):
         for ext in (".java", ".kt", ".kts"):
             findings, _ = detect_defects(
-                [source("Key" + ext, 'String key = "AKIAABCDEFGHIJKLMNOP";\n')])
+                [source("Key" + ext, 'String key = "AKIAZ3P7Q2N5R8T1V4W6";\n')])
             self.assertEqual([f["rule"] for f in findings], ["py-secret-aws"], ext)
-        findings, _ = detect_defects([source("Key.kt", "# -----BEGIN RSA PRIVATE KEY-----\n")])
+        body = (
+            "k3Jd9fQ2mZ7pLx4Rt8Yb1Nc6Wv0Hs5AgE2uDq7Fi9Kd4Mf8Pz2Xw7Lc1Vr6Tn3Bj5Gh0Sq9Ue4Ay8Di2Ok7Wm1Zp"
+            "R4tY6uI8oP0aS2dF4gH6jK8lZ1xC3vB5nM7qW9eR2tY4uI6oP8aS0dF2gH4jK6lZ")
+        findings, _ = detect_defects([source(
+            "Key.kt",
+            "// -----BEGIN RSA PRIVATE KEY-----\n%s\n// -----END RSA PRIVATE KEY-----\n" % body)])
         self.assertEqual([f["rule"] for f in findings], ["py-secret-pem"])
 
 

@@ -17,7 +17,8 @@ from lib.lang import (SUPPORTED_LABEL, frameworks, language_label, languages,
 from lib.entry import (extract_entrypoints, entrypoint_counts,
                        filter_entrypoints_by_language, ENTRY_LANGUAGE_FLOOR)
 from lib.schema import apply_confidence_cap, validate_finding, parse_jsonl
-from lib.rules import detect_defects, rule_coverage, rule_incidence, is_config_secret_file
+from lib.rules import (detect_defects, rule_coverage, rule_incidence,
+                       is_config_secret_file, placeholder_config_files)
 from lib.gitscope import secret_scope
 from lib.imports import compute_reach, entry_paths, read_aliases, seeds_from_entrypoints
 from lib.context import (extract_sites, load_sites, site_contains, MAX_SITES_DEFAULT,
@@ -34,6 +35,16 @@ from lib import verify
 
 from lib.version import VERSION
 MIN_LOC_DEFAULT = 10000
+
+# Taxonomies where presence at a line is enough to stop batch scheduling.
+# `weak-hash` is deliberately absent: MD5/SHA-1 presence is certain, but
+# whether the digest protects anything is contextual, so it ranks and does not
+# block. `scripts/test/test_secret_precision.py` asserts it never appears in
+# blocking_security.
+BLOCKING_TAXONOMIES = (
+    "missing-authz", "sql-injection", "command-injection", "code-injection",
+    "unsafe-deserialization", "hardcoded-secret", "tls-verification-disabled",
+)
 
 
 def parse_args(argv):
@@ -354,6 +365,8 @@ def cmd_gate(positional, flags):
     entrypoints, ignored_languages = filter_entrypoints_by_language(entrypoints, supported)
     counts = entrypoint_counts(entrypoints)
     secrets = secret_scope(walked["root"])
+    placeholder_files = placeholder_config_files(
+        files, secrets["tracked"] if secrets["tracked_only"] else None)
 
     reasons = []
     if not supported:
@@ -417,7 +430,14 @@ def cmd_gate(positional, flags):
             "unsupported": [e["lang"] for e in unsupported],
         },
         "rule_coverage": coverage,
-        "secrets": {"tracked_only": secrets["tracked_only"], "reason": secrets["reason"]},
+        "secrets": {
+            "tracked_only": secrets["tracked_only"],
+            "covers": ("git-tracked config files" if secrets["tracked_only"]
+                       else "every config file"),
+            "reason": secrets["reason"],
+            "placeholder_files_skipped": len(placeholder_files),
+            "placeholder_files": placeholder_files,
+        },
         "frameworks": fw,
         "tests": tests,
         "entrypoint_kinds": counts,
@@ -741,7 +761,7 @@ def cmd_sampling(positional, flags):
     return 0
 
 
-def _print_secret_scope(secrets, skipped):
+def _print_secret_scope(secrets, skipped, placeholders):
     """Say which config files the secret rules read, and why."""
     if secrets["tracked_only"]:
         detail = "git-tracked config files only"
@@ -749,6 +769,12 @@ def _print_secret_scope(secrets, skipped):
             detail += ", %d untracked skipped" % skipped
     else:
         detail = "every config file (%s)" % secrets["reason"]
+        # Widening from tracked to every config file changes what the scan can
+        # claim. It belongs on a warning line, not buried in a parenthetical.
+        print("warning    secret scanning covers every config file, not tracked ones")
+    if placeholders:
+        detail += ", %d placeholder file%s skipped" % (
+            placeholders, "" if placeholders == 1 else "s")
     print("secrets    %s" % detail)
 
 
@@ -780,6 +806,7 @@ def cmd_detect(positional, flags):
         1 for f in scanned
         if tracked is not None and f["rel"] not in tracked
         and is_config_secret_file(f["rel"], f["ext"]))
+    placeholder_files = placeholder_config_files(scanned, tracked)
     findings, warnings = detect_defects(scanned, tracked)
 
     entry_files = {e["file"] for e in scope["entrypoints"]}
@@ -814,6 +841,14 @@ def cmd_detect(positional, flags):
     # not only on stdout, so a published run can be audited after the fact.
     incidence = dict(rule_incidence(scanned, findings, tracked))
     scope["rule_incidence"] = incidence
+    scope["secrets"] = {
+        "tracked_only": secrets["tracked_only"],
+        "covers": ("git-tracked config files" if secrets["tracked_only"]
+                   else "every config file"),
+        "reason": secrets["reason"],
+        "placeholder_files_skipped": len(placeholder_files),
+        "placeholder_files": placeholder_files,
+    }
     (out_dir / "scope.json").write_text(json.dumps(scope, indent=2) + "\n", encoding="utf-8")
 
     by_taxonomy = {}
@@ -828,7 +863,7 @@ def cmd_detect(positional, flags):
     print("files      %s scanned, %s skipped as test code"
           % (num(len(scanned)), num(test_files)))
     _print_rule_coverage(coverage)
-    _print_secret_scope(secrets, skipped_secrets)
+    _print_secret_scope(secrets, skipped_secrets, len(placeholder_files))
     _print_rule_incidence(scanned, findings, tracked)
     print("findings   %d" % len(findings))
     for taxonomy, count in sorted(by_taxonomy.items(), key=lambda kv: -kv[1]):
@@ -1039,9 +1074,7 @@ def cmd_rank(positional, flags):
         "\n".join(json.dumps(f, sort_keys=True) for f in sorted(findings, key=lambda x: x["id"])).encode("utf-8")
     ).hexdigest()
 
-    blocking = [c for c in clusters if c["taxonomy"] in
-                ("missing-authz", "sql-injection", "command-injection", "code-injection",
-                 "unsafe-deserialization", "hardcoded-secret", "tls-verification-disabled")]
+    blocking = [c for c in clusters if c["taxonomy"] in BLOCKING_TAXONOMIES]
 
     rule_rows = (scope.get("rule_coverage") or rule_coverage(walked["files"]))["by_language"]
     supported_langs = set(scope["languages"]["supported"])
