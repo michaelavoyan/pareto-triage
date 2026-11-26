@@ -89,6 +89,9 @@ def is_config_secret_file(rel, ext):
     return ext in SECRET_EXTS or rel.rsplit("/", 1)[-1].startswith(".env")
 
 
+SECRET_RULES = {"py-secret-aws", "py-secret-pem", "py-secret-stripe",
+                "cfg-secret-generic"}
+
 SECRET_PATTERNS = [
     ("py-secret-aws", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
     ("py-secret-pem", re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")),
@@ -102,8 +105,124 @@ CONFIG_SECRETS = [
     ("cfg-secret-generic",
      re.compile(r"(?i)^[ \t]*[{,]?[ \t]*[\"']?[\w.-]*(password|passwd|pwd|secret|token|api[_-]?key|"
                 r"access[_-]?key|client[_-]?secret)[\w.-]*[ \t]*[:=][ \t]*"
-                r"['\"]?[^'\"\s#]{6,}", re.M)),
+                r"['\"]?(?P<value>[^'\"\s#]{6,})", re.M)),
 ]
+
+# Example configuration is committed on purpose. A sample or template file
+# documents the shape of a credential; it does not publish one. Sample matching
+# is on the path only, so a real config file with "example" in a value keeps
+# firing. The suffix checks cover the names that do not carry the word itself.
+PLACEHOLDER_PATH_WORDS = ("sample", "example", "template", "placeholder")
+PLACEHOLDER_PATH_SUFFIXES = (".tmpl", ".dist", ".example")
+
+# A value made of a repeated character or a sequential run is filler, not a
+# credential. Six is the shortest run that is not plausible in a random base64
+# key: two such runs in one value are already vanishingly unlikely.
+PLACEHOLDER_RUN = 6
+SEQUENTIAL_ALPHABET = "abcdefghijklmnopqrstuvwxyz0123456789"
+PEM_END = re.compile(r"-----END (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----")
+PEM_FILLER_WORDS = ("placeholder", "yoursecret", "notarealkey", "filler")
+
+
+def is_placeholder_path(rel):
+    """True when the path itself marks the file as a sample or template."""
+    for segment in rel.replace("\\", "/").lower().split("/"):
+        if not segment:
+            continue
+        if any(word in segment for word in PLACEHOLDER_PATH_WORDS):
+            return True
+        if segment.endswith(PLACEHOLDER_PATH_SUFFIXES):
+            return True
+    return False
+
+
+def _compact_value(value):
+    """The alphanumeric core: quotes, base64 padding, and separators removed."""
+    return re.sub(r"[^a-z0-9]", "", value.strip().strip("'\"").rstrip("=").lower())
+
+
+def _has_repeated_run(value):
+    compact = _compact_value(value)
+    run = 1
+    for previous, current in zip(compact, compact[1:]):
+        run = run + 1 if current == previous else 1
+        if run >= PLACEHOLDER_RUN:
+            return True
+    return False
+
+
+def _has_sequential_run(value):
+    compact = _compact_value(value)
+    if len(compact) < PLACEHOLDER_RUN:
+        return False
+    for seed in (SEQUENTIAL_ALPHABET, SEQUENTIAL_ALPHABET[::-1]):
+        doubled = seed * 2
+        for start in range(len(compact) - PLACEHOLDER_RUN + 1):
+            if compact[start:start + PLACEHOLDER_RUN] in doubled:
+                return True
+    return False
+
+
+def is_placeholder_value(value):
+    """True when a matched secret value is structurally documentation.
+
+    Every shape here is a value no real key would have: a reference URI, a
+    trailing ellipsis, an angle-bracket or `${...}` interpolation, one repeated
+    character, or a sequential alphabet/digit run. The check never looks at the
+    key name, so a realistic value under any name still fires.
+    """
+    text = value.strip().strip("'\"")
+    if not text:
+        return True
+    if text.lower().startswith("secret://"):
+        return True
+    if text.endswith("…") or text.endswith("..."):
+        return True
+    if "<" in text or ">" in text or "${" in text:
+        return True
+    return _has_repeated_run(text) or _has_sequential_run(text)
+
+
+def _pem_body(text, start):
+    """(base64 body, closed) for the PEM block whose header starts at `start`."""
+    newline = text.find("\n", start)
+    if newline < 0:
+        return "", False
+    end = PEM_END.search(text, newline)
+    if end is None:
+        return "", False
+    return re.sub(r"[^A-Za-z0-9+/=]", "", text[newline:end.start()]), True
+
+
+def _pem_is_placeholder(text, start):
+    body, closed = _pem_body(text, start)
+    core = body.rstrip("=")
+    if not closed or len(core) < 128:
+        return True
+    lowered = core.lower()
+    if any(word in lowered for word in PEM_FILLER_WORDS):
+        return True
+    return _has_repeated_run(core) or _has_sequential_run(core)
+
+
+def placeholder_config_files(files, tracked=None):
+    """Config files a sample/template name makes the secret rules skip.
+
+    The count is of config files because that is the population the secret scan
+    would otherwise read whole. A source file named like a sample still has its
+    secret rules skipped, but its code rules run and it is not a config-scan
+    omission. An untracked config file is already outside the scan, so it is
+    not counted twice.
+    """
+    skipped = []
+    for f in files:
+        rel = f["rel"]
+        if not is_config_secret_file(rel, f["ext"]) or not is_placeholder_path(rel):
+            continue
+        if tracked is not None and rel not in tracked:
+            continue
+        skipped.append(rel)
+    return sorted(skipped)
 
 # Which rules a file extension can reach. The ids are the ones META defines, so
 # a report can name the detectors that ran instead of only their count. This
@@ -117,11 +236,21 @@ JVM_RULE_IDS = (
 CONFIG_RULE_IDS = tuple(rule for rule, _ in CONFIG_SECRETS)
 
 
-def _line_hits(text, patterns):
+def _line_hits(text, patterns, rel):
     lines = text.split("\n")
     found = []
+    if is_placeholder_path(rel):
+        return found
     for rule, pattern in patterns:
         for match in pattern.finditer(text):
+            if rule == "py-secret-pem":
+                if _pem_is_placeholder(text, match.start()):
+                    continue
+            elif rule == "cfg-secret-generic":
+                if is_placeholder_value(match.group("value")):
+                    continue
+            elif is_placeholder_value(match.group(0)):
+                continue
             line = text.count("\n", 0, match.start()) + 1
             found.append((rule, line, lines[line - 1].strip()[:300]))
     return found
@@ -149,7 +278,7 @@ def _is_interpolated(node):
     return False
 
 
-def _py_defects(text):
+def _py_defects(text, rel):
     """Return [(rule, line, evidence)] or None when the file does not parse."""
     try:
         tree = ast.parse(text)
@@ -200,12 +329,12 @@ def _py_defects(text):
                 if isinstance(default, (ast.List, ast.Dict, ast.Set)):
                     found.append(("py-mutable-default", default.lineno, source_of(default)))
 
-    found.extend(_line_hits(text, SECRET_PATTERNS))
+    found.extend(_line_hits(text, SECRET_PATTERNS, rel))
     return found
 
 
-def _config_defects(text):
-    return _line_hits(text, CONFIG_SECRETS)
+def _config_defects(text, rel):
+    return _line_hits(text, CONFIG_SECRETS, rel)
 
 
 JS_RULES = [
@@ -304,7 +433,12 @@ def rule_incidence(files, findings, tracked=None):
                             and is_config_secret_file(f["rel"], f["ext"]))
         if untracked_config:
             continue
-        applicable.update(rule_ids_for_ext(f["ext"], f["rel"]))
+        ids = rule_ids_for_ext(f["ext"], f["rel"])
+        if is_placeholder_path(f["rel"]):
+            # A skipped sample never examined a secret, so it must not make a
+            # secret rule look exercised-and-clean.
+            ids = tuple(rule for rule in ids if rule not in SECRET_RULES)
+        applicable.update(ids)
     hits = {rule: 0 for rule in applicable}
     for finding in findings:
         if finding["rule"] in hits:
@@ -515,7 +649,7 @@ def detect_defects(files, tracked=None):
     for f in files:
         rel = f["rel"]
         if f["ext"] in PY_EXT:
-            result = _py_defects(f["text"])
+            result = _py_defects(f["text"], rel)
             if result is None:
                 warnings.append({"path": rel, "reason": "python parse error: AST rules skipped"})
                 continue
@@ -524,11 +658,11 @@ def detect_defects(files, tracked=None):
             pairs = _js_defects(f["text"])
         elif f["ext"] in JVM_EXT:
             # The Java/Kotlin secret patterns are the shared ones: no duplicate rule ids.
-            pairs = _jvm_defects(f["text"]) + _line_hits(f["text"], SECRET_PATTERNS)
+            pairs = _jvm_defects(f["text"]) + _line_hits(f["text"], SECRET_PATTERNS, rel)
         elif is_config_secret_file(rel, f["ext"]):
             if tracked is not None and rel not in tracked:
                 continue
-            pairs = _config_defects(f["text"])
+            pairs = _config_defects(f["text"], rel)
         else:
             continue
 

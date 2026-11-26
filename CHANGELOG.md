@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.6.2
+
+- Secret rules no longer report example configuration. A file whose path marks
+  it as a sample or template (`*sample*`, `*example*`, `*template*`, `*.tmpl`,
+  `*.dist`, `*.example`, `*placeholder*`) is skipped by every secret rule. The
+  skipped config files are printed by `detect` and recorded in `scope.json` as
+  `secrets.placeholder_files_skipped` and `secrets.placeholder_files`.
+- A matched secret value is also skipped when it is structurally a placeholder:
+  a `secret://…` reference, a value made of one repeated character or a
+  sequential alphabet/digit run, a trailing `…`/`...`, a `<…>` or `${…}`
+  interpolation, or a PEM block whose body is under 128 base64 characters or
+  contains filler. Realistic AWS/Stripe keys, 40-char base64 values, and
+  full-length PEM bodies still fire.
+- Measured on Signal-Server-main (not a git work tree): 50 findings before,
+  1 after — the SHA-1 in `ClusterLuaScript.java`. The two
+  `service/config/sample*.yml` files were skipped and counted, and no secret
+  finding survived. The final `blocking_security` list is empty.
+- `jvm-weak-hash` ranks but never blocks. MD5/SHA-1 presence is certain; whether
+  the digest protects anything is contextual, so `weak-hash` is not a
+  `blocking_security` taxonomy, and a test asserts it never appears there.
+- When the tree is not a git repository, `detect` now prints a warning that
+  secret scanning covers every config file rather than tracked ones, and
+  `scope.json` records `secrets.covers: "every config file"`.
+
 ## 0.6.1
 
 - F2: a top-five card now shows the evidence line with up to three lines either
