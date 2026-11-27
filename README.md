@@ -92,6 +92,12 @@ python3 $S rank $R && python3 $S report $R
 
 `pareto-triage help` lists the rest, including `verify --fix`, which proves a patch turns a failing probe green.
 
+## Development
+
+Work lands on `main` through short-lived branches and small PRs: one task per branch, merged within a day, trunk always green. Releases are tags on `main`, never release branches. CI rejects a PR over 400 changed non-test lines unless it is split or labelled `size:large`, and incomplete work merges behind a default-off flag.
+
+Read `CONTRIBUTING.md` before your first PR.
+
 ## Honest limits
 
 It cannot see through a DI container, an event bus, or a route built from a string. Reachability follows imports, understands `tsconfig` aliases and workspace names, and stops three hops out by default.

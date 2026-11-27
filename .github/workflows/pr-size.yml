@@ -1,0 +1,89 @@
+name: pr-size
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  diff-size:
+    name: diff size
+    runs-on: ubuntu-latest
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      LARGE: ${{ contains(github.event.pull_request.labels.*.name, 'size:large') }}
+      CEILING: "400"
+      CEILING_LARGE: "1200"
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Count non-test lines against the merge base
+        run: |
+          set -eu
+          for sha in "$BASE_SHA" "$HEAD_SHA"; do
+            git cat-file -e "${sha}^{commit}" 2>/dev/null || git fetch --no-tags origin "$sha"
+          done
+          merge_base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+
+          limit="$CEILING"
+          if [ "$LARGE" = "true" ]; then
+            limit="$CEILING_LARGE"
+          fi
+
+          # Tests and fixtures do not count toward the ceiling.
+          is_test_path() {
+            case "$1" in
+              fixtures/*|*/fixtures/*) return 0 ;;
+              */test/*|*/tests/*) return 0 ;;
+              test_*.py|*/test_*.py) return 0 ;;
+              *_test.py|*.test.js|*.test.ts|*.spec.js|*.spec.ts) return 0 ;;
+            esac
+            return 1
+          }
+
+          total=0
+          binary=0
+          : > "$RUNNER_TEMP/size.tsv"
+
+          while IFS=$'\t' read -r added deleted path; do
+            if is_test_path "$path"; then
+              continue
+            fi
+            if [ "$added" = "-" ] || [ "$deleted" = "-" ]; then
+              binary=$((binary + 1))
+              continue
+            fi
+            lines=$((added + deleted))
+            total=$((total + lines))
+            printf '%s\t%s\t%s\t%s\n' "$lines" "$added" "$deleted" "$path" >> "$RUNNER_TEMP/size.tsv"
+          done < <(git diff --numstat "$merge_base" "$HEAD_SHA")
+
+          {
+            echo "### PR size"
+            echo ""
+            echo "Changed non-test lines: **$total** (limit $limit)."
+            if [ "$binary" -gt 0 ]; then
+              echo ""
+              echo "$binary binary file(s) not counted."
+            fi
+            if [ "$LARGE" = "true" ]; then
+              echo ""
+              echo "Label \`size:large\` raises the limit from $CEILING to $limit."
+            fi
+            echo ""
+            echo "| lines | added | deleted | file |"
+            echo "|---:|---:|---:|---|"
+            sort -rn "$RUNNER_TEMP/size.tsv" | head -20 | awk -F'\t' '{printf "| %s | %s | %s | `%s` |\n", $1, $2, $3, $4}'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$total" -gt "$limit" ]; then
+            echo "::error::PR changes $total non-test lines; the limit is $limit."
+            echo "Split the change into phases and land the first green part on main."
+            echo "A maintainer can apply the size:large label for a genuine exception."
+            exit 1
+          fi
